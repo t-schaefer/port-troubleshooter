@@ -67,6 +67,19 @@ everything that is still open.
                     documentation names another device is marked "conflict - check first"
                     and only written as a comment, never as "shutdown".
 
+  Names / identity: case, spaces, dots and dashes do not matter, but the letter / number
+                    blocks do: DCR.SGXR 103 = DCR.SGXR103, DCB.ESW B01 != DCB.ESWB 01.
+  Naming only:      same device / port, written differently - leading zeros (DCB.WS 2 =
+                    DCB.WS 02), room prefix left out (WS 202 = DCB.WS 202), CloudVision
+                    hostname, one-letter typo with all numbers equal (OC.PRIN 01 = OC.PRINT 01;
+                    never across rooms: DCB / DCR stay different), ETH = ETH.1, MGNT = MGMT.
+                    Shown blue, not counted as an error. Two cables on one port: the one the
+                    other sources agree with is the reference.
+  Speed:            the service listens at once and loads its data in the background (page
+                    shows "Loading data on the server..."); Ports / Mismatches are built in the
+                    background; requests slower than 0.5 s are logged as "SLOW ..." in
+                    service.log.
+
   Port names are compared tolerantly: MGNT = MGMT, ETH.1 = Ethernet = ENET 1 = LAN,
   ETH.3 = 03, S5. D1 = S5 / D1, 10G.2 = 10G / 2 / 2. Different numbers stay different.
 

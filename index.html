@@ -76,7 +76,9 @@
   .src { font-size: 0.72rem; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
   .sev { font-size: 0.72rem; padding: 0 7px; border-radius: 8px; white-space: nowrap; color: #fff; }
   .sev.error { background: var(--bad); } .sev.warning { background: var(--warn); } .sev.check { background: var(--accent); } .sev.info { background: var(--muted); }
-  tr.v-device td { background: var(--badbg); } tr.v-port td, tr.v-trunk td, tr.v-switch td, tr.v-nocable td { background: var(--warnbg); }
+  tr.v-device td, tr.v-double td { background: var(--badbg); } tr.v-naming td { background: var(--infobg); }
+  .tag.naming { background: var(--accent); color: #fff; } .sev.naming { background: var(--accent); }
+  .st.namingonly { background: var(--infobg); color: var(--accent); } tr.v-port td, tr.v-trunk td, tr.v-switch td, tr.v-nocable td { background: var(--warnbg); }
   .src.snag { background: var(--warnbg); color: var(--warn); } .src.cloudvision { background: var(--infobg); color: var(--accent); }
   .datagrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
   .ds { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
@@ -179,7 +181,8 @@
   </section>
 
   <section id="tab-mis" class="hidden">
-    <p class="muted">Every switch port where Patchmanager cabling, the IP list and the snagging list disagree. Reference is the Patchmanager cabling (or the IP list when there is no cable).</p>
+    <p class="muted">Every switch port where Patchmanager cabling, the IP list, the snagging list and CloudVision disagree. Reference is the Patchmanager cabling (or the IP list when there is no cable).
+      <b>Naming only</b> = technically the same device / port, only written differently (leading zeros, room prefix left out, CloudVision hostname, one-letter typo, ETH = ETH.1, MGNT = MGMT) – fix the spelling when convenient. <b>Errors</b> = a different device or a second cable: check on site.</p>
     <div class="filters">
       <input type="search" id="mq" placeholder="Filter (switch, device, …)" style="flex:1;min-width:220px">
       <a class="btn" href="/export/mismatches.csv">Download CSV</a>
@@ -339,7 +342,13 @@ window.addEventListener("popstate", route);
 
 // ------------------------------------------------------------- status
 async function loadStatus() {
+  const wasLoading = STATUS && STATUS.loading;
   try { STATUS = await api("/api/status"); } catch (e) { $("#hdrstatus").textContent = "service not reachable: " + e.message; return; }
+  if (STATUS.loading) {           // the service has just started and is reading its data
+    $("#hdrstatus").innerHTML = '<b class="okt">Loading data on the server…</b>';
+    setTimeout(loadStatus, 1500); return;
+  }
+  if (wasLoading) { PORTS = MIS = DEVS = null; route(); loadWork(); loadShutCount(); }
   const m = STATUS.store.meta, n = CORE.filter(k => m[k]).length, cv = STATUS.cv;
   const ncv = Object.keys(m).filter(k => k.startsWith("cvports:")).length;
   renderNoData(n);
@@ -450,12 +459,13 @@ function renderPort(c) {
 }
 const VERDICT = { ref: '<span class="tag">reference</span>', ok: '<span class="tag ok">same</span>', device: '<span class="tag bad">other device</span>',
   port: '<span class="tag warn">other port</span>', trunk: '<span class="tag warn">differs – trunk assumed</span>', unknown: '<span class="tag">cabling ends at panel</span>',
-  incomplete: '<span class="tag">no device name</span>', unmapped: '<span class="tag">hostname not mapped</span>' };
+  incomplete: '<span class="tag">no device name</span>', unmapped: '<span class="tag">hostname not mapped</span>',
+  naming: '<span class="tag naming" title="Same device / port, only written differently">naming only</span>', double: '<span class="tag bad">second cable on this port</span>' };
 function compareTable(rows) {
   if (!rows || !rows.length) return "";
   return `<h2>Sources compared</h2><div class="tablewrap"><table><thead><tr><th>Source</th><th>Device</th><th>Device port</th><th>Detail</th><th></th></tr></thead><tbody>${
     rows.map(r => `<tr class="v-${r.verdict}"><td>${esc(r.source)}</td><td><a class="dev" href="#device=${encodeURIComponent(r.device)}">${esc(r.device)}</a></td>
-      <td>${esc(r.port)}</td><td class="muted">${esc(r.detail)}</td><td>${VERDICT[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>`;
+      <td>${esc(r.port)}</td><td class="muted">${esc(r.detail)}${r.naming ? '<br><span style="color:var(--accent)">written differently: ' + esc(r.naming) + "</span>" : ""}</td><td>${VERDICT[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function renderPath(p) {
   const hops = p.hops, ends = hops.filter(h => h.type === "end");
@@ -879,7 +889,7 @@ async function loadMis() {
 function renderMis() {
   const q = $("#mq").value.trim().toLowerCase(), counts = {};
   MIS.forEach(m => counts[m.kind] = (counts[m.kind] || 0) + 1);
-  const sevs = { error: "errors", warning: "warnings", check: "check on site", info: "info" };
+  const sevs = { error: "errors", warning: "warnings", check: "check on site", naming: "naming only (technically OK)", info: "info" };
   const bySev = {}; MIS.forEach(m => bySev[m.severity] = (bySev[m.severity] || 0) + 1);
   $("#mchips").innerHTML = [["", "All " + MIS.length], ...Object.keys(sevs).filter(k => bySev[k]).map(k => [k, sevs[k] + " " + bySev[k]])]
     .map(([k, l]) => `<button class="chip ${k === msev ? "on" : ""}" data-s="${k}">${esc(l)}</button>`).join("");
@@ -890,7 +900,7 @@ function renderMis() {
     <td><span class="sev ${m.severity}">${esc(m.kind)}</span></td><td>${esc(m.source)}:<br><b>${esc(m.says)}</b></td>
     <td>${esc(m.reference)}:<br>${esc(m.ref_says)}</td><td class="muted">${esc(m.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
   $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; selectRow(tr); m.nums && m.nums.length ? openPort(m.switch, intf(m.nums)) : openDevice(m.device || m.switch); });
-  const sevs2 = { error: "errors", warning: "warnings", check: "check on site", info: "info" };
+  const sevs2 = { error: "errors", warning: "warnings", check: "check on site", naming: "naming only", info: "info" };
   const act = [msev && "severity <b>" + esc(sevs2[msev] || msev) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#msum").innerHTML = `Showing <b>${rows.length}</b> of ${MIS.length}${act.length ? " · filtered by " + act.join(", ") : " · no filter"} · sorted by switch and port
     ${act.length ? '<button class="btn" id="mclear">Clear filters</button>' : ""}`;

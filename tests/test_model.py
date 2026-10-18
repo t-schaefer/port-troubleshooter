@@ -128,6 +128,23 @@ class ModelTest(unittest.TestCase):
     def test_p2p_destination(self):
         self.assertEqual(self.s.device_split("P2P_swhost01_Ethernet15/2"), ("SW 01", "Ethernet15/2"))
 
+    def test_naming_vs_real_mismatch(self):
+        rel = self.s.device_relation
+        self.assertEqual(rel("DCB.WS 2", "DCB.WS 02"), "naming")
+        self.assertEqual(rel("WS 202", "DCB.WS 202"), "naming")
+        self.assertEqual(rel("OC.PRIN 01", "OC.PRINT 01"), "naming")
+        self.assertEqual(rel("SWHOST01", "SW 01"), "naming")          # CloudVision hostname vs PM name
+        self.assertEqual(rel("06-25.PIR 01", "6-26.PIR 01"), "different")
+        self.assertEqual(rel("DCB.XCL 21", "DCR.XCL 21"), "different")
+        self.assertEqual(rel("CS20.AIF 01", "CS29.AIF 01"), "different")
+        self.assertEqual(model.port_relation("ETH", "ETH.1"), "naming")
+        self.assertEqual(model.port_relation("ETH.2", "ETH.1"), "different")
+        self.s.plan[0].update(device="CAM 1.ETH.1 -- R/Wall", equipment="CAM 1", eqport="ETH.1")
+        self.s._rebuild_names()
+        card = self.s.port_card("SW 01", (12,))
+        self.assertEqual([r["verdict"] for r in card["compare"]], ["ref", "naming"])
+        self.assertIn("ok", [c[0] for c in card["checks"]])
+
     def test_same_port(self):
         self.assertTrue(model.same_port("PCLAN1", "PC LAN 1"))
         self.assertTrue(model.same_port("ETH.1", "Eth"))

@@ -37,16 +37,29 @@ def norm_port(p):
 
 _NORM_RE = re.compile(r"[\s.\-_]")
 _ZERO_RE = re.compile(r"(?<!\d)0+(?=\d)")
+_RUN_RE = re.compile(r"[A-Z]+|\d+|[^\sA-Z\d.\-_]+")
+
+
+@functools.lru_cache(maxsize=200000)
+def _compact(s):
+    return _NORM_RE.sub("", s).upper()
 
 
 @functools.lru_cache(maxsize=200000)
 def _norm(s):
-    return _NORM_RE.sub("", s).upper()
+    # letter / number blocks, separators between them ignored
+    return "~".join(_RUN_RE.findall(s.upper()))
+
+
+def compact(s):
+    """Everything glued together: 'DCB.VS 02' -> 'DCBVS02' (for partial search only)."""
+    return _compact(s if isinstance(s, str) else str(s or ""))
 
 
 def norm_name(s):
-    """Compare names without case, spaces, dots, dashes: 'DCB.ESW A01' == 'dcb esw a01'.
-    (Called millions of times - cached.)"""
+    """Identity of a name: case, spaces, dots, dashes do not matter, but the letter / number
+    blocks do: 'DCB.ESW A01' == 'dcb esw a01' == 'DCB-ESW-A01', 'DCR.SGXR 103' == 'DCR.SGXR103',
+    yet 'DCB.ESW B01' (access switch B01) != 'DCB.ESWB 01' (blue leaf 01). Cached."""
     return _norm(s if isinstance(s, str) else str(s or ""))
 
 
@@ -76,6 +89,34 @@ def same_switch_port(a, b):
 PORT_SYNONYMS = [(r"MGNT|MANAGEMENT", "MGMT"), (r"ETHERNET|ENET|LAN|LOM|NIC|RJ45|EXTLAN", "ETH")]
 
 
+def port_relation(a, b):
+    """'same' | 'naming' (ETH = ETH.1, MGNT = MGMT, PCLAN1 = PC LAN 1 ...) | 'different'."""
+    if norm_name(a) == norm_name(b) or not a or not b:
+        return "same"
+    return "naming" if same_port(a, b) else "different"
+
+
+def likely_typo(a, b):
+    """Same numbers in the same order, letters differ by one edit (insert / delete / replace /
+    swap two neighbours) and are long enough: 'OC.PRIN 01' ~ 'OC.PRINT 01', 'SPDE 1' ~ 'SDPE 1'."""
+    # a different room (DCB / DCR, CS1 / CS2 ...) is never a typo
+    if "." in a and "." in b and norm_name(a.split(".", 1)[0]) != norm_name(b.split(".", 1)[0]):
+        return False
+    na, nb = norm_digits(a), norm_digits(b)
+    if re.findall(r"\d+", na) != re.findall(r"\d+", nb):
+        return False
+    la, lb = re.sub(r"[\d~]", "", na), re.sub(r"[\d~]", "", nb)
+    if min(len(la), len(lb)) < 4 or la == lb:
+        return False
+    if abs(len(la) - len(lb)) > 1:
+        return False
+    if len(la) == len(lb):
+        diff = [i for i in range(len(la)) if la[i] != lb[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1 and la[diff[0]] == lb[diff[1]] and la[diff[1]] == lb[diff[0]])
+    short, long_ = (la, lb) if len(la) < len(lb) else (lb, la)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
 def same_port(a, b):
     """Same physical port despite naming: 'PCLAN1' == 'PC LAN 1', 'ETH.1' == 'Ethernet' ==
     'ENET 1', 'MGNT' == 'MGMT', 'ETH.3' == '03', '10G.1' == 'Expansion / 10G.1 / 10G.1'.
@@ -84,7 +125,7 @@ def same_port(a, b):
         parts = [x.strip() for x in str(p).split("/") if x.strip()] + [str(p)]
         out = set()
         for x in parts:
-            k = norm_digits(x)
+            k = _ZERO_RE.sub("", compact(x))
             for pat, rep in PORT_SYNONYMS:
                 k = re.sub(pat, rep, k)
             out.add(k)
@@ -93,7 +134,7 @@ def same_port(a, b):
             num = re.sub(r"\D", "", k)
             if num and re.fullmatch(r"(ETH|PORT|P)?\d+", k):
                 out.add("#" + num)       # 'ETH3' / '03' / 'P3' -> '#3'
-        out.add(norm_digits(str(p).replace("/", "")))  # 'S5 / D1' == 'S5. D1'
+        out.add(_ZERO_RE.sub("", compact(str(p).replace("/", ""))))  # 'S5 / D1' == 'S5. D1'
         return out
 
     def last_num(p):
@@ -806,7 +847,8 @@ class Store:
         """Every name a device is known by -> the device (its Patchmanager top-level label).
         Sources: Patchmanager label / alias / asset tag / description, cable ends, cable
         description, IP list device names, snagging-list destinations, CloudVision hostnames."""
-        idx = defaultdict(dict)   # key -> {device: (name, via)}
+        idx = defaultdict(dict)   # strict key -> {device: (name, via)}
+        comp = defaultdict(dict)  # glued-together key ('DCBVS2') -> {device: (name, via)}
 
         def add(name, device, via):
             name, device = str(name or "").strip(" *"), str(device or "").strip(" *")
@@ -814,6 +856,8 @@ class Store:
                 return
             for k in {norm_name(name), norm_digits(name)}:
                 idx[k].setdefault(device, (name, via))
+            for k in {compact(name), _ZERO_RE.sub("", compact(name))}:   # for typed-together searches
+                comp[k].setdefault(device, (name, via))
 
         self.switch_set = {norm_name(k) for k in self.mapping} | {norm_name(p["switch"]) for p in self.plan}
         self.switch_names = {norm_name(k): k for k in self.mapping}
@@ -874,6 +918,7 @@ class Store:
         # names that are only known from plan / snags but are cabled under another spelling:
         # point them at the cabled device when the normalised name is the same
         self.name_index = idx
+        self.name_compact = comp
 
     def device_split(self, name):
         """'DCB.ICM 02.1.SFP' -> ('DCB.ICM 02', '1.SFP') when 'DCB.ICM 02' is a known device;
@@ -915,6 +960,10 @@ class Store:
         for k in (norm_name(name), norm_digits(name)):
             if k in self.name_index:
                 return next(iter(self.name_index[k]))
+        comp = getattr(self, "name_compact", {})
+        for k in (compact(name), _ZERO_RE.sub("", compact(name))):
+            if k in comp and len(comp[k]) == 1:      # only when unambiguous
+                return next(iter(comp[k]))
         return None
 
     def find_devices(self, q, limit=40):
@@ -924,9 +973,13 @@ class Store:
         for k in keys:
             for dev, (name, via) in self.name_index.get(k, {}).items():
                 found.setdefault(dev, (0, name, via))
-        k0 = norm_name(q)
+        comp = getattr(self, "name_compact", {})
+        for k in {compact(q), _ZERO_RE.sub("", compact(q))}:
+            for dev, (name, via) in comp.get(k, {}).items():
+                found.setdefault(dev, (0, name, via))
+        k0 = compact(q)
         if len(found) < limit and len(k0) >= 2:
-            for key, devs in self.name_index.items():
+            for key, devs in comp.items():
                 for k in (k0,):
                     rank = 1 if key.startswith(k) else 2 if (len(k) >= 3 and k in key) else None
                     if rank is None:
@@ -1290,10 +1343,17 @@ class Store:
                 seen.add((s["_dev"], s.get("_devport")))
                 rows.append({"source": "Snagging list", "device": s["_dev"], "port": s.get("_devport", ""),
                              "detail": "#%s %s" % (s.get("nr", ""), s.get("status") or "open")})
-        # verdict against the Patchmanager cabling (the reference); without cabling against the plan
-        ref = next((r for r in rows if r["source"] == "Patchmanager cabling"), None) or \
-            next((r for r in rows if r["source"] == "IP list"), None)
+        # verdict against the Patchmanager cabling (the reference); without cabling against the plan.
+        # Two cables on one port: the one the other sources agree with is the reference.
+        pm_rows = [r for r in rows if r["source"] == "Patchmanager cabling"]
+        others = [r for r in rows if r["source"] != "Patchmanager cabling"]
+        ref = next((p for p in pm_rows if any(self.device_relation(o["device"], p["device"]) != "different"
+                                              for o in others)), None) or \
+            (pm_rows[0] if pm_rows else None) or next((r for r in rows if r["source"] == "IP list"), None)
         for r in rows:
+            rel = self.device_relation(r["device"], ref["device"]) if ref and r is not ref else "same"
+            prel = port_relation(r["port"], ref["port"]) if ref and r is not ref else "same"
+            r["naming"] = ""
             if r is ref or not ref:
                 r["verdict"] = "ref" if r is ref else ""
             elif not norm_name(r["device"]) or str(r["device"]).startswith("."):
@@ -1301,17 +1361,46 @@ class Store:
             elif r["source"].startswith("Switch description") and re.fullmatch(r"[A-Za-z0-9\-]+\d", r["device"]) \
                     and not self.pm_name(r["device"]):
                 r["verdict"] = "unmapped"  # a CloudVision hostname without Patchmanager name (Switches tab)
-            elif ref.get("open") and not same_device(r["device"], ref["device"]):
+            elif ref.get("open") and rel == "different":
                 r["verdict"] = "unknown"   # cabling stops at a panel: the device behind it is not documented
-            elif ref.get("assumed") and not same_device(r["device"], ref["device"]):
+            elif ref.get("assumed") and rel == "different":
                 r["verdict"] = "trunk"     # differs, but the cabling crossed a trunk with an assumed port
-            elif not same_device(r["device"], ref["device"]):
+            elif r["source"] == "Patchmanager cabling" and rel == "different":
+                r["verdict"] = "double"    # a second cable on the same switch port
+            elif rel == "different":
                 r["verdict"] = "device"
-            elif r["port"] and ref["port"] and not same_port(r["port"], ref["port"]):
+            elif r["port"] and ref["port"] and prel == "different":
                 r["verdict"] = "port"
+            elif rel == "naming" or prel == "naming":
+                r["verdict"] = "naming"    # same device / port, written differently
+                r["naming"] = "; ".join(x for x in (
+                    "%s vs %s" % (r["device"], ref["device"]) if rel == "naming" else "",
+                    "port %s vs %s" % (r["port"], ref["port"]) if prel == "naming" else "") if x)
             else:
                 r["verdict"] = "ok"
         return rows
+
+    def device_relation(self, a, b):
+        """'same' | 'naming' (same device, spelt differently) | 'different'.
+        naming: leading zeros / spaces / dots (DCB.WS 2 = DCB.WS 02), room prefix left out
+        (WS 202 = DCB.WS 202), CloudVision hostname vs Patchmanager name, or a one-letter typo
+        with all numbers equal (OC.PRIN 01 = OC.PRINT 01). A different number or room stays different."""
+        if norm_name(a) == norm_name(b):
+            return "same"
+        if not norm_name(a) or not norm_name(b):
+            return "different"
+        if norm_digits(a) == norm_digits(b):
+            return "naming"
+        pa, pb = self.pm_name(a), self.pm_name(b)
+        if (pa and same_device(pa, b)) or (pb and same_device(pb, a)) or (pa and pb and same_device(pa, pb)):
+            return "naming"
+        sa, sb = str(a), str(b)
+        for x, y in ((sa, sb), (sb, sa)):     # room prefix missing on one side
+            if "." in x and x.count(".") > y.count(".") and norm_digits(x.split(".", 1)[1]) == norm_digits(y):
+                return "naming"
+        if likely_typo(sa, sb):
+            return "naming"
+        return "different"
 
     def _checks(self, card):
         """Plain-language findings: documentation gaps and mismatches."""
@@ -1362,8 +1451,13 @@ class Store:
                                                              ref["source"], ref["device"] + (" " + ref["port"] if ref["port"] else ""))))
             elif r["verdict"] == "port":
                 out.append(("warn", "%s: same device %s, but port %s instead of %s." % (r["source"], r["device"], r["port"], ref["port"])))
-        if ref and len(cmp_rows) > 1 and all(r["verdict"] in ("ok", "ref") for r in cmp_rows):
+        if ref and len(cmp_rows) > 1 and all(r["verdict"] in ("ok", "ref", "naming") for r in cmp_rows):
             out.append(("ok", "All sources agree: %s%s." % (ref["device"], " " + ref["port"] if ref["port"] else "")))
+        for r in cmp_rows:
+            if r["verdict"] == "naming":
+                out.append(("info", "Naming only, technically the same: %s writes %s." % (r["source"], r["naming"])))
+            elif r["verdict"] == "double":
+                out.append(("bad", "Two cables documented on this port in Patchmanager: %s and %s." % (ref["device"], r["device"])))
         if card["plan"] and not live and far_ends:
             out.append(("warn", "IP list lists this port as free, but Patchmanager has a cable on it."))
         eq = card.get("equipment")
@@ -1515,7 +1609,7 @@ class Store:
                 pc = self.port_card(pm, nums, with_shut=False)
                 others = sorted({"%s: %s" % (r["source"], r["device"]) for r in pc["compare"]
                                  if r["verdict"] != "incomplete" and norm_name(r["device"])
-                                 and not str(r["device"]).startswith(".") and not same_device(r["device"], dev)
+                                 and not str(r["device"]).startswith(".") and self.device_relation(r["device"], dev) == "different"
                                  and not self.future_of(r["device"])})
                 rows.append({"switch": pm, "cv_switch": self.cv_name(pm) or "", "nums": nums, "intf": intf_name(nums),
                              "device": dev, "device_port": dport, "via": via, "source": info["source"], "note": info["note"],
@@ -1712,8 +1806,9 @@ class Store:
         live = [p for p in card["plan"] if not p["free"]]
         plan = ("%s %s" % (live[0].get("_dev") or live[0]["equipment"], live[0].get("_devport") or live[0]["eqport"])).strip() if live else ""
         verdicts = {r["verdict"] for r in card["compare"]}
-        status = ("mismatch" if "device" in verdicts else "check" if "trunk" in verdicts else
-                  "port differs" if "port" in verdicts else "")
+        status = ("mismatch" if "device" in verdicts else "two cables" if "double" in verdicts else
+                  "check" if "trunk" in verdicts else "port differs" if "port" in verdicts else
+                  "naming only" if "naming" in verdicts else "")
         open_snags = sum(1 for s in card["snags"] if s["open"])
         lanes = card.get("cv_ports") or []
         up = sum(1 for l in lanes if l["status"] == "Connected")
@@ -1813,12 +1908,11 @@ class Store:
                 if r["verdict"] in ("ok", "ref", ""):
                     continue
                 sev = {"device": "error", "port": "warning", "trunk": "check", "unknown": "info", "incomplete": "info",
-                       "unmapped": "info"}[r["verdict"]]
+                       "unmapped": "info", "naming": "naming", "double": "error"}[r["verdict"]]
                 kind = {"device": "different device", "port": "different port", "trunk": "different device (trunk assumed)",
                         "unknown": "cabling ends at panel", "incomplete": "IP list without device name",
-                        "unmapped": "CloudVision hostname not mapped"}[r["verdict"]]
-                if r["source"] == "Patchmanager cabling":
-                    kind = "two cables on one port"
+                        "unmapped": "CloudVision hostname not mapped", "naming": "naming only (same device)",
+                        "double": "two cables on one port"}[r["verdict"]]
                 out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"],
                             "nums": card["nums"], "severity": sev, "kind": kind, "source": r["source"],
                             "says": (r["device"] + " " + (r["port"] or "")).strip(), "reference": ref["source"] if ref else "",

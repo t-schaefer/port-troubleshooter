@@ -100,12 +100,18 @@ MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Swi
                  ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
 
 
+COMPUTE_LOCK = threading.Lock()     # the big lists: one at a time, without blocking other requests
+STATE = {"loading": True, "lists_ready": False}
+
+
 def mismatches():
-    """Whole-site comparison takes a few seconds - computed once per data state."""
+    """Whole-site comparison - computed once per data state."""
     key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True))
     if MISMATCH_CACHE["key"] != key:
-        MISMATCH_CACHE["rows"] = STORE.mismatches()
-        MISMATCH_CACHE["key"] = key
+        with COMPUTE_LOCK:
+            if MISMATCH_CACHE["key"] != key:
+                MISMATCH_CACHE["rows"] = STORE.mismatches()
+                MISMATCH_CACHE["key"] = key
     return MISMATCH_CACHE["rows"]
 
 
@@ -114,8 +120,10 @@ def ports_overview():
     key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True),
            json.dumps(STORE.future, sort_keys=True), CV["events_at"])
     if PORTS_CACHE["key"] != key:
-        PORTS_CACHE["rows"] = STORE.ports_overview(CV["events"])
-        PORTS_CACHE["key"] = key
+        with COMPUTE_LOCK:
+            if PORTS_CACHE["key"] != key:
+                PORTS_CACHE["rows"] = STORE.ports_overview(CV["events"])
+                PORTS_CACHE["key"] = key
     return PORTS_CACHE["rows"]
 
 
@@ -273,10 +281,9 @@ def warm_up():
     def work():
         try:
             t = time.time()
-            with LOCK:
-                ports_overview()
-            with LOCK:
-                mismatches()
+            ports_overview()
+            mismatches()
+            STATE["lists_ready"] = True
             log.info("lists ready (%.1fs)", time.time() - t)
         except Exception:
             log.exception("warm-up failed")
@@ -525,6 +532,24 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": msg}, code)
 
     def do_GET(self):
+        t = time.time()
+        try:
+            self._get()
+        finally:
+            dt = time.time() - t
+            if dt > 0.5:
+                log.warning("SLOW GET %s %.1fs", self.path[:120], dt)
+
+    def do_POST(self):
+        t = time.time()
+        try:
+            self._post()
+        finally:
+            dt = time.time() - t
+            if dt > 2:
+                log.warning("SLOW POST %s %.1fs", self.path[:120], dt)
+
+    def _get(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
@@ -540,6 +565,7 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     cfg = load_config()
                     self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": cfg.get("jira_url", ""),
+                                "loading": STATE["loading"], "lists_ready": STATE["lists_ready"],
                                 "cv_url": cfg.get("cv_url", ""), "serials": load_serials()})
             elif u.path == "/api/search":
                 with LOCK:
@@ -565,11 +591,9 @@ class Handler(BaseHTTPRequestHandler):
                         return self._err("bad cable")
                     self._json(STORE.cable_card(idx, q.get("side")))
             elif u.path == "/api/mismatches":
-                with LOCK:
-                    self._json({"items": mismatches()})
+                self._json({"items": [], "loading": True} if STATE["loading"] else {"items": mismatches()})
             elif u.path == "/api/ports":
-                with LOCK:
-                    self._json({"items": ports_overview()})
+                self._json({"items": [], "loading": True} if STATE["loading"] else {"items": ports_overview()})
             elif u.path == "/api/devices":
                 with LOCK:
                     self._json({"items": STORE.devices_overview()})
@@ -662,7 +686,7 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("GET %s failed", u.path)
             self._err("server error: %s" % e, 500)
 
-    def do_POST(self):
+    def _post(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
@@ -817,12 +841,19 @@ def main():
     for d in import_dirs():
         if d == BASE_DIR / "inbox":
             d.mkdir(exist_ok=True)
-    load_saved()
-    threading.Thread(target=cv_loop, daemon=True).start()
     ThreadingHTTPServer.request_queue_size = 128
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    warm_up()
+
+    def start():   # listen at once - the page shows "loading" until the data is in
+        t = time.time()
+        with LOCK:
+            load_saved()
+        STATE["loading"] = False
+        log.info("data loaded (%.1fs)", time.time() - t)
+        threading.Thread(target=cv_loop, daemon=True).start()
+        warm_up()
+    threading.Thread(target=start, daemon=True).start()
     log.info("Port Troubleshooter on http://0.0.0.0:%d/  (Ctrl+C stops it)", args.port)
     try:
         srv.serve_forever()
