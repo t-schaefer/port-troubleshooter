@@ -19,6 +19,7 @@ Whether a two-number name is breakout (port/lane) or modular (slot/port) depends
 switch: a switch whose Patchmanager ports sit under LCxx line cards is modular.
 """
 import csv
+import functools
 import io
 import re
 from collections import Counter, defaultdict
@@ -34,14 +35,29 @@ def norm_port(p):
     return str(int(p)) if p.isdigit() else p
 
 
+_NORM_RE = re.compile(r"[\s.\-_]")
+_ZERO_RE = re.compile(r"(?<!\d)0+(?=\d)")
+
+
+@functools.lru_cache(maxsize=200000)
+def _norm(s):
+    return _NORM_RE.sub("", s).upper()
+
+
 def norm_name(s):
-    """Compare names without case, spaces, dots, dashes: 'DCB.ESW A01' == 'dcb esw a01'."""
-    return re.sub(r"[\s.\-_]", "", str(s or "")).upper()
+    """Compare names without case, spaces, dots, dashes: 'DCB.ESW A01' == 'dcb esw a01'.
+    (Called millions of times - cached.)"""
+    return _norm(s if isinstance(s, str) else str(s or ""))
+
+
+@functools.lru_cache(maxsize=200000)
+def _ndig(s):
+    return _ZERO_RE.sub("", _norm(s))
 
 
 def norm_digits(s):
     """norm_name without leading zeros in numbers: 'DCB.VS 02' == 'DCB.VS 2' == 'dcbvs2'."""
-    return re.sub(r"(?<!\d)0+(?=\d)", "", norm_name(s))
+    return _ndig(s if isinstance(s, str) else str(s or ""))
 
 
 def same_device(a, b):
@@ -705,6 +721,7 @@ class Store:
         self.snags = []
         self.mapping = {}       # PM switch name -> CV hostname (snagging list + overrides)
         self.overrides = {}
+        self._pm_by_norm, self._cv_by_norm, self._plan_sw_by_norm = {}, {}, {}
         self.future = {}        # device -> {"note", "since"}: marked "future use" in the page
         self.neuron = []        # Neuron signal list rows (one per BNC)
         self.cvports = {}       # CloudVision hostname (upper) -> {nums: interface row}
@@ -756,6 +773,11 @@ class Store:
             dup[cv.upper()].append(pm)
             self.cv_to_pm.setdefault(cv.upper(), pm)
         self.mapping_dups = {cv: pms for cv, pms in dup.items() if len(pms) > 1}
+        self._pm_by_norm = {norm_name(pm): pm for pm in self.mapping}
+        self._cv_by_norm = {norm_name(pm): cv for pm, cv in self.mapping.items()}
+        self._plan_sw_by_norm = {}
+        for p in self.plan:
+            self._plan_sw_by_norm.setdefault(norm_name(p["switch"]), p["switch"])
         # IP list slot numbers of chassis switches -> CloudVision numbering (see Cabling.slot_offset);
         # nums_doc keeps what the list says
         modular = {}
@@ -1173,24 +1195,17 @@ class Store:
         if n.upper() in self.cv_to_pm:
             return self.cv_to_pm[n.upper()]
         nn = norm_name(n)
-        for pm in self.mapping:
-            if norm_name(pm) == nn:
-                return pm
+        if nn in self._pm_by_norm:
+            return self._pm_by_norm[nn]
         if self.cabling and nn in self.cabling.by_top:
             c, s = self.cabling.by_top[nn][0]
             return getattr(c, s).top
-        for p in self.plan:
-            if norm_name(p["switch"]) == nn:
-                return p["switch"]
-        return None
+        return self._plan_sw_by_norm.get(nn)
 
     def cv_name(self, pm):
         if not pm:
             return None
-        for k, v in self.mapping.items():
-            if norm_name(k) == norm_name(pm):
-                return v
-        return None
+        return self._cv_by_norm.get(norm_name(pm))
 
     def switches(self):
         """All switches we know of (PM names) with their CV hostname."""
@@ -1202,7 +1217,7 @@ class Store:
         return sorted(({"pm": pm, "cv": self.cv_name(pm) or ""} for pm in names.values()), key=lambda x: x["pm"])
 
     # -- the port card -----------------------------------------------------------
-    def port_card(self, switch, nums, cv_events=None, with_shut=True):
+    def port_card(self, switch, nums, cv_events=None, with_shut=True, nav=False):
         """Everything about one switch port. `switch` PM or CV name, `nums` tuple."""
         pm = self.pm_name(switch) or switch
         cv = self.cv_name(pm) or (switch if switch and switch != pm else "")
@@ -1238,7 +1253,7 @@ class Store:
         if self.equipment:
             card["equipment"] = self.equipment.get(pm)
         card["cv_ports"] = self.cv_ports_for(pm, nums, modular)
-        if with_shut:     # (not for the internal bulk calls)
+        if nav:           # only for the card the user opens - not for the bulk lists
             card["nav"] = self.neighbours(pm, nums)
         card["compare"] = self._compare_port(card)
         card["shut"] = self.shut_for(pm, nums) if with_shut else None

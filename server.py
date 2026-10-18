@@ -267,6 +267,22 @@ def md_to_html(md):
     return "\n".join(out)
 
 
+def warm_up():
+    """Build the big lists (Ports, Mismatches) in the background after start / import / settings
+    change, so a visitor never waits for them and other requests are not held up."""
+    def work():
+        try:
+            t = time.time()
+            with LOCK:
+                ports_overview()
+            with LOCK:
+                mismatches()
+            log.info("lists ready (%.1fs)", time.time() - t)
+        except Exception:
+            log.exception("warm-up failed")
+    threading.Thread(target=work, daemon=True).start()
+
+
 def to_csv(rows, cols):
     """Excel-friendly CSV: UTF-8 with BOM, one header row."""
     f = io.StringIO()
@@ -464,6 +480,7 @@ def cv_loop():
                 CV["events_at"] = datetime.now().isoformat(timespec="seconds")
                 CV["raw_sample"] = json.dumps(CV["events"][:2], indent=1)[:2000]
                 CV["error"] = ""
+                warm_up()
             except CloudVisionError as e:
                 CV["error"] = str(e)
                 log.warning("CloudVision: %s", e)
@@ -532,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not SWITCH_RE.match(sw) or not nums:
                     return self._err("bad switch / interface")
                 with LOCK:
-                    self._json(STORE.port_card(sw, nums, CV["events"]))
+                    self._json(STORE.port_card(sw, nums, CV["events"], nav=True))
             elif u.path == "/api/device":
                 name = q.get("name", "").strip()
                 if not name or len(name) > 120:
@@ -661,6 +678,7 @@ class Handler(BaseHTTPRequestHandler):
                     kind, count = import_file(name, body)
                 except ValueError as e:
                     return self._err(str(e))
+                warm_up()
                 self._json({"kind": kind, "count": count})
             elif u.path == "/api/import-latest":
                 data = json.loads(body or b"{}")
@@ -683,6 +701,7 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError as e:
                         return self._err("%s: %s" % (f.name, e))
                     done.append({"file": f.name, "kind": kind, "count": count})
+                warm_up()
                 self._json({"imported": done})
             elif u.path == "/api/switches":
                 data = json.loads(body or b"{}")
@@ -699,6 +718,7 @@ class Handler(BaseHTTPRequestHandler):
                     SWITCHES_FILE.write_text(json.dumps(clean, indent=2, sort_keys=True), encoding="utf-8")
                     STORE.set_overrides(clean)
                 log.info("switches.json saved (%d overrides)", len(clean))
+                warm_up()
                 self._json({"ok": True, "overrides": len(clean)})
             elif u.path == "/api/future":
                 data = json.loads(body or b"{}")
@@ -715,6 +735,7 @@ class Handler(BaseHTTPRequestHandler):
                     FUTURE_FILE.write_text(json.dumps(fut, indent=2, sort_keys=True), encoding="utf-8")
                     STORE.set_future(fut)
                 log.info("FUTURE %s %s %s", "set" if data.get("future") else "cleared", dev, note)
+                warm_up()
                 self._json({"ok": True})
             elif u.path == "/api/notes":
                 data = json.loads(body or b"{}")
@@ -801,6 +822,7 @@ def main():
     ThreadingHTTPServer.request_queue_size = 128
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+    warm_up()
     log.info("Port Troubleshooter on http://0.0.0.0:%d/  (Ctrl+C stops it)", args.port)
     try:
         srv.serve_forever()
