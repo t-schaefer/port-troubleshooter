@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Port Troubleshooter</title>
+<style>
+  :root { --bg: #f4f6f8; --card: #fff; --text: #212529; --muted: #6c757d; --line: #dee2e6; --accent: #0d6efd; --ok: #198754; --bad: #dc3545; --warn: #b7791f;
+          --okbg: #e8f5ee; --badbg: #fdecee; --warnbg: #fff6e0; --infobg: #eef3fb; --hl: #f8f9fb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16191d; --card: #1f2329; --text: #e9ecef; --muted: #9aa3ad; --line: #343a40; --accent: #6ea8fe; --ok: #4fbf87; --bad: #ff6b76; --warn: #f0b85a;
+          --okbg: #17301f; --badbg: #3a1a1e; --warnbg: #3a2f12; --infobg: #1b2638; --hl: #252a31; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 1.45rem; }
+  h2 { font-size: 1.05rem; margin: 22px 0 8px; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85em; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+  nav button { border: 0; background: none; color: var(--muted); font: inherit; padding: 8px 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  nav .count { font-size: 0.75rem; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 4px; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 0.85rem; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); } .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.sm { padding: 2px 9px; font-size: 0.78rem; } .btn:disabled { opacity: .45; cursor: not-allowed; }
+  input[type=text], input[type=search], select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
+  .searchbar { display: flex; gap: 8px; }
+  .searchbar input { flex: 1; font-size: 1.05rem; padding: 10px 12px; }
+  .hint { margin: 6px 2px 0; }
+  .results { margin-top: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .results div { padding: 7px 12px; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 12px; align-items: baseline; }
+  .results div:last-child { border-bottom: 0; } .results div:hover { background: var(--hl); }
+  .results .k { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); width: 44px; flex: none; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-top: 16px; }
+  .cardhead { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+  .cardhead h3 { margin: 0; font-size: 1.3rem; }
+  .cardhead .tools { display: flex; gap: 6px; flex-wrap: wrap; }
+  .checks { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 4px; }
+  .checks li { padding: 6px 10px; border-radius: 6px; font-size: 0.88rem; border-left: 4px solid; }
+  .checks .ok { background: var(--okbg); border-color: var(--ok); } .checks .bad { background: var(--badbg); border-color: var(--bad); font-weight: 600; }
+  .checks .warn { background: var(--warnbg); border-color: var(--warn); } .checks .info { background: var(--infobg); border-color: var(--accent); }
+  .cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 22px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  .path { list-style: none; margin: 0; padding: 0; position: relative; }
+  .path li { position: relative; padding: 4px 0 4px 26px; }
+  .path li::before { content: ""; position: absolute; left: 9px; top: 0; bottom: 0; border-left: 2px solid var(--line); }
+  .path li:first-child::before { top: 14px; } .path li:last-child::before { bottom: calc(100% - 14px); }
+  .path .end::after { content: ""; position: absolute; left: 4px; top: 10px; width: 12px; height: 12px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); }
+  .path .end.first::after, .path .end.last::after { background: var(--accent); }
+  .path .end.missing::after { border-color: var(--bad); background: var(--bad); }
+  .path .end b { font-weight: 600; }
+  .path .end .sub { color: var(--muted); font-size: 0.8rem; }
+  .path .cab { font-size: 0.8rem; color: var(--muted); padding-top: 2px; padding-bottom: 2px; }
+  .path .cab .id { color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .path .note { font-size: 0.8rem; color: var(--warn); }
+  .tag { display: inline-block; font-size: 0.7rem; padding: 0 6px; border-radius: 8px; background: var(--line); color: var(--text); margin-left: 4px; vertical-align: 1px; }
+  .tag.bad { background: var(--bad); color: #fff; } .tag.warn { background: var(--warn); color: #fff; } .tag.ok { background: var(--ok); color: #fff; }
+  .pathstatus { font-size: 0.78rem; margin: 0 0 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px; text-align: left; vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 0.78rem; white-space: nowrap; user-select: none; }
+  th.sort { cursor: pointer; } th.sort:hover { color: var(--text); }
+  tbody tr.click { cursor: pointer; } tbody tr.click:hover { background: var(--hl); }
+  .tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 0.88rem; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 14px; padding: 2px 10px; font-size: 0.8rem; cursor: pointer; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .src { font-size: 0.72rem; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
+  .src.snag { background: var(--warnbg); color: var(--warn); } .src.cloudvision { background: var(--infobg); color: var(--accent); }
+  .datagrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  .ds { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .ds h4 { margin: 0 0 4px; font-size: 0.95rem; display: flex; gap: 8px; align-items: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .drop { display: block; cursor: pointer; margin-top: 14px; border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center; color: var(--muted); }
+  .drop.over { border-color: var(--accent); color: var(--accent); }
+  .err { color: var(--bad); } .okt { color: var(--ok); }
+  .empty { color: var(--muted); font-size: 0.88rem; padding: 6px 0; }
+  .hidden { display: none !important; }
+  pre.raw { white-space: pre-wrap; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 0.75rem; }
+  td input { width: 100%; padding: 3px 6px; font-size: 0.85rem; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; z-index: 60; }
+  @media print { nav, .searchbar, .hint, .results, .cardhead .tools, header .muted { display: none !important; } body { background: #fff; } .card { border: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Port Troubleshooter</h1>
+    <span class="muted" id="hdrstatus">loading…</span>
+  </header>
+  <nav>
+    <button data-tab="port" class="on">Troubleshoot</button>
+    <button data-tab="work">Worklist <span class="count" id="workcount">–</span></button>
+    <button data-tab="switches">Switches</button>
+    <button data-tab="data">Data &amp; CloudVision</button>
+  </nav>
+
+  <section id="tab-port">
+    <form class="searchbar" id="searchform" autocomplete="off">
+      <input type="search" id="q" placeholder="Ethernet12 on dcbeswcpredg001 · DCB.ESW A01 12 · F03639 · DCB.VS 02" autofocus>
+      <button class="btn primary" type="submit">Search</button>
+    </form>
+    <p class="hint muted">Paste a CloudVision event line ("Ethernet49 on idf2eswcpredg03"), a Patchmanager switch + port, a cable ID or a device name.</p>
+    <div class="results hidden" id="results"></div>
+    <div id="card"></div>
+  </section>
+
+  <section id="tab-work" class="hidden">
+    <div class="filters">
+      <input type="search" id="wq" placeholder="Filter (switch, error, destination, who…)" style="flex:1;min-width:220px">
+      <select id="wsrc"><option value="">All sources</option><option value="snag">Snagging list</option><option value="cloudvision">CloudVision only</option></select>
+    </div>
+    <div class="chips" id="wchips"></div>
+    <div class="tablewrap"><table id="wtable">
+      <thead><tr><th class="sort" data-k="switch">Switch</th><th class="sort" data-k="intf">Port</th><th class="sort" data-k="what">Problem</th>
+        <th class="sort" data-k="destination">Destination</th><th class="sort" data-k="status">Status</th><th class="sort" data-k="since">Since</th><th>Who / Jira</th></tr></thead>
+      <tbody></tbody></table></div>
+    <p class="muted" id="wfoot"></p>
+  </section>
+
+  <section id="tab-switches" class="hidden">
+    <p class="muted">Patchmanager name ↔ CloudVision hostname. Taken from the snagging list's name sheet; a value typed here overrides it (saved in switches.json on the server).</p>
+    <div class="filters"><input type="search" id="sq" placeholder="Filter" style="flex:1"><button class="btn primary" id="ssave">Save overrides</button><span id="smsg" class="muted"></span></div>
+    <div class="tablewrap"><table id="stable"><thead><tr><th>Patchmanager</th><th>CloudVision hostname</th><th>Override</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-data" class="hidden">
+    <div class="datagrid" id="datagrid"></div>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".csv,.xlsx,.xlsm" multiple class="hidden">
+      <b>Drop files here or click to import</b><br>
+      <span class="muted">Patchmanager cable export (CSV) · Patchmanager equipment export (CSV) · IP list View (xlsx) · Connectivity snagging list (xlsx).
+        The type is detected automatically; a new file replaces the previous one of the same type.</span>
+    </label>
+    <div id="importlog" class="muted" style="margin-top:8px"></div>
+
+    <h2>CloudVision</h2>
+    <div id="cvbox" class="ds"></div>
+    <div id="cvlocate" class="hidden" style="margin-top:12px">
+      <form class="searchbar" id="locform"><input type="text" id="locq" placeholder="Where is it plugged in? IP, MAC or hostname"><button class="btn" type="submit">Locate</button></form>
+      <div id="locres"></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = async (path, opt) => { const r = await fetch(path, opt); const j = await r.json().catch(() => ({error: "HTTP " + r.status})); if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status)); return j; };
+const toast = msg => { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2200); };
+const intf = nums => "Ethernet" + nums.join("/");
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem("pt." + k)) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("pt." + k, JSON.stringify(v)); } catch {} } };
+let STATUS = null, WORK = [], CURRENT = null;
+
+// ------------------------------------------------------------- tabs / routing
+function showTab(t) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + t));
+  if (t === "work") loadWork(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
+}
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => { showTab(b.dataset.tab); history.replaceState(null, "", "#" + b.dataset.tab); });
+function route() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/);
+  if (m) { showTab("port"); openPort(m[1], m[2], false); }
+  else if (c) { showTab("port"); openCable(+c[1], c[2], false); }
+  else if (["work", "switches", "data"].includes(h)) showTab(h);
+}
+window.addEventListener("hashchange", route);
+
+// ------------------------------------------------------------- status
+async function loadStatus() {
+  try { STATUS = await api("/api/status"); } catch (e) { $("#hdrstatus").textContent = "service not reachable: " + e.message; return; }
+  const m = STATUS.store.meta, n = Object.keys(m).length, cv = STATUS.cv;
+  $("#hdrstatus").innerHTML = `${n}/4 inputs loaded · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
+  if (!$("#tab-data").classList.contains("hidden")) renderData();
+}
+
+// ------------------------------------------------------------- search
+$("#searchform").onsubmit = async e => {
+  e.preventDefault();
+  const q = $("#q").value.trim(); if (!q) return;
+  const box = $("#results");
+  try {
+    const { results } = await api("/api/search?q=" + encodeURIComponent(q));
+    if (results.length === 1) { box.classList.add("hidden"); return pick(results[0]); }
+    box.classList.remove("hidden");
+    box.innerHTML = results.length ? results.map((r, i) => `<div data-i="${i}"><span class="k">${esc(r.kind)}</span><span><b>${esc(r.title)}</b> <span class="muted">${esc(r.sub)}</span></span></div>`).join("")
+      : `<div class="muted">Nothing found for “${esc(q)}”.${STATUS && !Object.keys(STATUS.store.meta).length ? " No data imported yet – see Data &amp; CloudVision." : ""}</div>`;
+    box.querySelectorAll("[data-i]").forEach(d => d.onclick = () => { box.classList.add("hidden"); pick(results[+d.dataset.i]); });
+  } catch (err) { box.classList.remove("hidden"); box.innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+};
+function pick(r) { r.kind === "port" ? openPort(r.switch, intf(r.nums)) : openCable(r.cable, r.side); }
+
+// ------------------------------------------------------------- port card
+async function openPort(sw, i, push = true) {
+  if (push) location.hash = "port=" + encodeURIComponent(sw) + "|" + encodeURIComponent(i);
+  $("#card").innerHTML = '<div class="card muted">loading…</div>';
+  try { CURRENT = await api(`/api/port?switch=${encodeURIComponent(sw)}&intf=${encodeURIComponent(i)}`); }
+  catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  renderPort(CURRENT);
+}
+function stepPort(d) {
+  const n = [...CURRENT.nums]; n[n.length - 1] = Math.max(1, n[n.length - 1] + d); openPort(CURRENT.switch, intf(n));
+}
+function renderPort(c) {
+  const eq = c.equipment;
+  const plan = c.plan.map(p => `<tr><td>${esc(p.device) || '<span class="muted">free</span>'}</td><td>${esc(p.vlan)}</td><td>${esc(p.cable)}</td><td class="muted">${esc(p.sheet)} r${p.row}</td></tr>`).join("");
+  const snags = c.snags.map(s => `<tr><td>${esc(s.nr)}</td><td>${esc(s.first)}</td><td>${esc(s.error || s.error_type)}${s.comment ? '<br><span class="muted">' + esc(s.comment) + '</span>' : ""}</td>
+     <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td>
+     <td>${esc(s.action)}${s.fixed ? '<br><span class="muted">' + esc(s.fixed) + '</span>' : ""}</td><td>${esc(s.who)}${s.jira ? "<br>" + esc(s.jira) : ""}</td></tr>`).join("");
+  const cvOn = STATUS && STATUS.cv.enabled;
+  const ev = c.events.map(e => `<tr><td class="mono">${esc((e.time || "").replace("T", " ").slice(0, 19))}</td><td>${esc(e.severity)}</td><td>${esc(e.title)}<br><span class="muted">${esc(e.description)}</span></td><td>${e.open ? '<span class="tag bad">open</span>' : '<span class="tag">closed</span>'}</td></tr>`).join("");
+  $("#card").innerHTML = `<div class="card">
+    <div class="cardhead">
+      <div><h3>${esc(c.switch)} · ${esc(c.intf)}</h3>
+        <div class="muted">CloudVision: <span class="mono">${esc(c.cv_switch || "–")} ${esc(c.intf)}</span>${eq ? " · " + esc(eq.template) + " · " + esc(eq.location) + (eq.position ? " · " + esc(eq.position) : "") : ""}</div></div>
+      <div class="tools"><button class="btn sm" id="prev">◀ port</button><button class="btn sm" id="next">port ▶</button>
+        <button class="btn sm" id="copy">Copy job card</button><button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div>
+    </div>
+    <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul>
+    <div class="cols">
+      <div><h2>Documented cable path <span class="muted">(Patchmanager)</span></h2>${c.paths.length ? c.paths.map(renderPath).join("") : '<p class="empty">No cable on this port in the Patchmanager export.</p>'}</div>
+      <div>
+        <h2>Port plan <span class="muted">(IP list)</span></h2>
+        ${plan ? `<table><thead><tr><th>Device</th><th>VLAN / SFP</th><th>Cable</th><th></th></tr></thead><tbody>${plan}</tbody></table>` : '<p class="empty">Not in the port plan.</p>'}
+        <h2>CloudVision events</h2>
+        ${!cvOn ? '<p class="empty">CloudVision not configured.</p>' : ev ? `<table><tbody>${ev}</tbody></table>` : '<p class="empty">No interface events in the last hours.</p>'}
+      </div>
+    </div>
+    <h2>Snagging list <span class="muted">(${c.snags.length})</span></h2>
+    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>First seen</th><th>Problem</th><th>Status</th><th>Done</th><th>Who</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries for this port.</p>'}
+  </div>`;
+  $("#prev").onclick = () => stepPort(-1); $("#next").onclick = () => stepPort(1);
+  $("#copy").onclick = () => copy(jobCard(c), "Job card copied");
+  $("#link").onclick = () => copy(location.href, "Link copied");
+}
+function renderPath(p) {
+  const hops = p.hops, ends = hops.filter(h => h.type === "end");
+  const st = { complete: '<span class="tag ok">complete</span>', open: '<span class="tag warn">ends at panel / open</span>', ambiguous: '<span class="tag warn">ambiguous</span>', loop: '<span class="tag bad">loop</span>' }[p.status] || "";
+  return `<p class="pathstatus">${st} ${ends.length} points, ${hops.filter(h => h.type === "cable").length} cables</p><ul class="path">` + hops.map((h, i) => {
+    if (h.type === "cable") return `<li class="cab"><span class="id">${esc(h.id || "?")}</span> · ${esc(h.template)}${h.length ? " · " + esc(h.length) : ""}${h.trunk ? ' <span class="tag warn">trunk – same port assumed</span>' : ""}${(h.flags || []).map(f => ' <span class="tag">' + esc(f) + '</span>').join("")}</li>`;
+    if (h.type === "note") return `<li class="note">⚠ ${esc(h.text)}</li>`;
+    const where = [h.location, h.cabinet, h.u && h.u !== "U" ? h.u : ""].filter(Boolean).join(" · ");
+    const cls = ["end", h === ends[0] ? "first" : "", h === ends[ends.length - 1] ? "last" : "", h.missing ? "missing" : ""].join(" ");
+    return `<li class="${cls}"><b>${esc(h.name)}</b>${h.assumed ? ' <span class="tag warn">assumed</span>' : ""}<div class="sub">${esc(h.template)}${where ? " — " + esc(where) : ""}</div></li>`;
+  }).join("") + "</ul>";
+}
+function jobCard(c) {
+  const L = [`PORT: ${c.switch} ${c.intf}   (CloudVision: ${c.cv_switch || "-"} ${c.intf})`];
+  if (c.equipment) L.push(`Switch: ${c.equipment.template} @ ${c.equipment.location} ${c.equipment.position}`);
+  const live = c.plan.filter(p => !p.free); if (live.length) L.push(`Port plan: ${live.map(p => p.device + " VLAN " + p.vlan).join("; ")}`);
+  c.paths.forEach((p, n) => {
+    L.push("", `Cable path${c.paths.length > 1 ? " " + (n + 1) : ""} (${p.status}):`);
+    p.hops.forEach(h => {
+      if (h.type === "cable") L.push(`    | ${h.id || "?"}  ${h.template}${h.length ? "  " + h.length : ""}${h.trunk ? "  [trunk, same port assumed]" : ""}`);
+      else if (h.type === "note") L.push(`    ! ${h.text}`);
+      else L.push(`  * ${h.name}${h.location || h.cabinet ? "   [" + [h.location, h.cabinet, h.u && h.u !== "U" ? h.u : ""].filter(Boolean).join(" / ") + "]" : ""}`);
+    });
+  });
+  const pr = c.checks.filter(x => x[0] !== "ok"); if (pr.length) L.push("", "Notes:", ...pr.map(x => "  - " + x[1]));
+  const open = c.snags.filter(s => s.open); if (open.length) L.push("", "Open snags:", ...open.map(s => `  #${s.nr} ${s.error || s.error_type} (${s.status || "open"}) ${s.first}`));
+  if (c.events.length) L.push("", "CloudVision:", ...c.events.slice(0, 5).map(e => `  ${e.time} ${e.title}`));
+  L.push("", location.origin + "/#port=" + encodeURIComponent(c.switch) + "|" + encodeURIComponent(c.intf));
+  return L.join("\n");
+}
+async function copy(text, msg) {
+  try { await navigator.clipboard.writeText(text); toast(msg); }
+  catch { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast(msg); }
+}
+
+// ------------------------------------------------------------- cable card
+async function openCable(idx, side, push = true) {
+  if (push) location.hash = "cable=" + idx + (side ? "|" + side : "");
+  try {
+    const c = await api(`/api/cable?idx=${idx}${side ? "&side=" + side : ""}`);
+    $("#card").innerHTML = `<div class="card"><div class="cardhead"><div><h3>Cable ${esc(c.cable.id)}</h3>
+      <div class="muted">${esc(c.cable.template)}${c.cable.length ? " · " + esc(c.cable.length) : ""} · ${esc(c.cable.stamp)}</div></div></div>
+      <div class="cols"><div><h2>${esc(c.a.name)} → far end</h2>${renderPath(c.paths[0])}</div>${c.paths[1] ? `<div><h2>${esc(c.b.name)} → far end</h2>${renderPath(c.paths[1])}</div>` : ""}</div></div>`;
+  } catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+// ------------------------------------------------------------- worklist
+let wsort = store.get("wsort", { k: "since", d: -1 }), wstatus = store.get("wstatus", "");
+async function loadWork() {
+  try { WORK = (await api("/api/worklist")).items; } catch (e) { $("#wfoot").textContent = e.message; return; }
+  $("#workcount").textContent = WORK.length; renderWork();
+}
+function renderWork() {
+  const q = $("#wq").value.trim().toLowerCase(), src = $("#wsrc").value;
+  const counts = {}; WORK.forEach(w => counts[w.status] = (counts[w.status] || 0) + 1);
+  $("#wchips").innerHTML = [["", "All " + WORK.length], ...Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([s, n]) => [s, s + " " + n])]
+    .map(([s, l]) => `<button class="chip ${s === wstatus ? "on" : ""}" data-s="${esc(s)}">${esc(l)}</button>`).join("");
+  $("#wchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { wstatus = b.dataset.s; store.set("wstatus", wstatus); renderWork(); });
+  let rows = WORK.filter(w => (!src || w.source === src) && (!wstatus || w.status === wstatus) &&
+    (!q || [w.switch, w.cv_switch, w.intf, w.what, w.destination, w.who, w.jira, w.nr].join(" ").toLowerCase().includes(q)));
+  rows.sort((a, b) => String(a[wsort.k] ?? "").localeCompare(String(b[wsort.k] ?? ""), undefined, { numeric: true }) * wsort.d);
+  $("#wtable tbody").innerHTML = rows.map((w, i) => `<tr class="click" data-i="${WORK.indexOf(w)}"><td><b>${esc(w.switch)}</b><br><span class="muted mono">${esc(w.cv_switch)}</span></td>
+    <td class="mono">${esc(w.intf)}</td><td>${esc(w.what)} <span class="src ${w.source}">${w.source === "snag" ? "#" + esc(w.nr) : "CV"}</span></td>
+    <td>${esc(w.destination)}</td><td>${esc(w.status)}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + esc(w.jira) : ""}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="empty">Nothing open${WORK.length ? " for this filter" : " – import the snagging list or configure CloudVision"}.</td></tr>`;
+  $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const w = WORK[+tr.dataset.i]; if (w.nums.length) { showTab("port"); openPort(w.switch, intf(w.nums)); } else toast("No interface in this entry"); });
+  $("#wfoot").textContent = `${rows.length} of ${WORK.length} shown. Open = snagging list status not fixed / closed / duplicate / ignore, plus CloudVision interface events not yet in the list.`;
+}
+$("#wq").oninput = renderWork; $("#wsrc").onchange = renderWork;
+document.querySelectorAll("#wtable th.sort").forEach(th => th.onclick = () => { wsort = { k: th.dataset.k, d: wsort.k === th.dataset.k ? -wsort.d : 1 }; store.set("wsort", wsort); renderWork(); });
+
+// ------------------------------------------------------------- switches
+let SW = [];
+async function loadSwitches() {
+  try { SW = (await api("/api/switches")).switches; } catch (e) { $("#smsg").textContent = e.message; return; }
+  renderSwitches();
+}
+function renderSwitches() {
+  const q = $("#sq").value.trim().toLowerCase();
+  $("#stable tbody").innerHTML = SW.map((s, i) => [s, i]).filter(([s]) => !q || (s.pm + " " + s.cv).toLowerCase().includes(q)).map(([s, i]) => `<tr>
+    <td>${esc(s.pm)}</td><td class="mono">${esc(s.cv) || '<span class="muted">–</span>'}</td>
+    <td><input type="text" data-i="${i}" value="${s.override ? esc(s.cv) : ""}" placeholder="hostname"></td>
+    <td>${s.dup ? '<span class="tag bad">same hostname as another switch</span>' : ""}${s.in_cv === false ? '<span class="tag warn">not in CloudVision inventory</span>' : s.in_cv ? '<span class="tag ok">in CloudVision</span>' : ""}</td></tr>`).join("");
+}
+$("#sq").oninput = renderSwitches;
+$("#ssave").onclick = async () => {
+  const ov = {}; SW.forEach(s => { if (s.override) ov[s.pm] = s.cv; });
+  document.querySelectorAll("#stable input").forEach(inp => { const s = SW[+inp.dataset.i]; if (inp.value.trim()) ov[s.pm] = inp.value.trim(); else delete ov[s.pm]; });
+  if (!confirm(`Save ${Object.keys(ov).length} hostname override(s) to switches.json on the server?`)) return;
+  try { await api("/api/switches", { method: "POST", body: JSON.stringify(ov) }); $("#smsg").textContent = "saved"; loadSwitches(); } catch (e) { $("#smsg").textContent = e.message; }
+};
+
+// ------------------------------------------------------------- data + import
+const KINDS = { cables: "Patchmanager cables", equipment: "Patchmanager equipment", portplan: "Port plan (IP list View)", snags: "Connectivity snagging list" };
+async function renderData() {
+  if (!STATUS) return;
+  const m = STATUS.store.meta;
+  $("#datagrid").innerHTML = Object.entries(KINDS).map(([k, l]) => `<div class="ds"><h4><span class="dot ${m[k] ? "ok" : ""}"></span>${l}</h4>
+    ${m[k] ? `<div class="muted">${esc(m[k].file)}<br>${m[k].count} rows · imported ${esc(m[k].loaded.replace("T", " "))}</div>` : '<div class="muted">not imported</div>'}</div>`).join("");
+  const cv = STATUS.cv; let raw = "";
+  if (cv.enabled) { try { raw = (await api("/api/cv")).sample; } catch {} }
+  $("#cvbox").innerHTML = `<h4><span class="dot ${cv.enabled && !cv.error ? "ok" : cv.error ? "bad" : ""}"></span>${esc(cv.url || "no URL")}</h4>
+    ${!cv.token ? '<div class="muted">No token. Put a CloudVision service-account token (read-only role) into <span class="mono">cv_token.txt</span> next to server.py, or set the environment variable <span class="mono">CV_TOKEN</span>, then restart the service.</div>' :
+      `<div class="muted">${cv.devices} devices (${esc(cv.devices_at || "–")}) · ${cv.events} interface events (${esc(cv.events_at || "–")})</div>
+       ${cv.error ? `<div class="err">${esc(cv.error)}</div>` : ""}<button class="btn sm" id="cvref" style="margin-top:6px">Refresh now</button>
+       ${raw ? `<details style="margin-top:6px"><summary class="muted">Raw sample (to check the field mapping)</summary><pre class="raw">${esc(raw)}</pre></details>` : ""}`}`;
+  $("#cvlocate").classList.toggle("hidden", !cv.enabled);
+  const b = $("#cvref"); if (b) b.onclick = async () => { await api("/api/cv/refresh", { method: "POST" }); toast("Refresh requested"); setTimeout(loadStatus, 4000); };
+}
+async function upload(files) {
+  for (const f of files) {
+    $("#importlog").innerHTML += `<div>${esc(f.name)}: importing…</div>`;
+    const line = $("#importlog").lastElementChild;
+    try { const r = await api("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: await f.arrayBuffer() });
+      line.innerHTML = `<span class="okt">${esc(f.name)}: ${esc(KINDS[r.kind])}, ${r.count} rows</span>`; }
+    catch (e) { line.innerHTML = `<span class="err">${esc(f.name)}: ${esc(e.message)}</span>`; }
+  }
+  await loadStatus(); loadWork();
+}
+$("#file").onchange = e => upload([...e.target.files]);
+const drop = $("#drop");
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files]); };
+$("#locform").onsubmit = async e => {
+  e.preventDefault(); const q = $("#locq").value.trim(); if (!q) return;
+  $("#locres").innerHTML = '<p class="muted">asking CloudVision…</p>';
+  try { const { hits } = await api("/api/cv/locate?q=" + encodeURIComponent(q));
+    $("#locres").innerHTML = hits.length ? `<table><thead><tr><th>Switch</th><th>Interface</th><th>MAC</th><th>IP</th></tr></thead><tbody>${hits.map((h, i) => `<tr class="click" data-i="${i}"><td>${esc(h.switch)}</td><td class="mono">${esc(h.interface)}</td><td class="mono">${esc(h.mac)}</td><td class="mono">${esc(h.ip)}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">Not found.</p>';
+    $("#locres").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const h = hits[+tr.dataset.i]; showTab("port"); openPort(h.switch, h.interface); });
+  } catch (err) { $("#locres").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
+};
+
+loadStatus().then(() => { route(); loadWork(); });
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

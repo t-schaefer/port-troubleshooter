@@ -1,0 +1,6 @@
+data/
+config.json
+switches.json
+cv_token.txt
+service.log*
+__pycache__/
