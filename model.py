@@ -21,7 +21,7 @@ switch: a switch whose Patchmanager ports sit under LCxx line cards is modular.
 import csv
 import io
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 
 from xlsx import read_xlsx
@@ -165,7 +165,8 @@ def is_passive(end):
 # ---------------------------------------------------------------- detection
 
 def detect_kind(filename, data):
-    """Which input a file is: 'cables' | 'equipment' | 'portplan' | 'snags' | None."""
+    """Which input a file is: 'cables' | 'equipment' | 'portplan' | 'snags' | 'neuron' |
+    'cvports' | None."""
     name = (filename or "").lower()
     if name.endswith(".csv"):
         head = data[:4000].decode("utf-8-sig", "replace") if isinstance(data, bytes) else data[:4000]
@@ -174,6 +175,8 @@ def detect_kind(filename, data):
             return "cables"
         if "Equipment Identifier" in first and "Equipment Template" in first:
             return "equipment"
+        if "Interface" in first and "Operational Status" in first and "Transceiver Type" in first:
+            return "cvports"
         return None
     if name.endswith((".xlsx", ".xlsm")):
         sheets = read_xlsx(data, max_rows=40)
@@ -182,12 +185,101 @@ def detect_kind(filename, data):
                 cells = [c.strip().lower() for c in r]
                 if "status manually" in cells or ("port cv" in cells and "switch cad" in cells):
                     return "snags"
+                if "neuron" in cells and "card" in cells and any(c.startswith("bnc") for c in cells):
+                    return "neuron"
         for rows in sheets.values():
             for r in rows:
                 cells = [c.strip().lower() for c in r]
                 if "switch" in cells and "port" in cells and "device" in cells:
                     return "portplan"
     return None
+
+
+CVPORTS_FILE_RE = re.compile(r"cvp-ethernet-interfaces-(.+?)-\d{4}-\d\d-\d\d", re.I)
+
+
+def meta_key(kind, filename):
+    """Inputs that exist once ('cables') use the kind; CloudVision port exports exist once per
+    switch: 'cvports:DCBESWLIVSPI001' (switch name from the CloudVision file name)."""
+    if kind == "cvports":
+        m = CVPORTS_FILE_RE.search(filename or "")
+        if not m:
+            raise ValueError("CloudVision interface export: keep CloudVision's file name "
+                             "(cvp-ethernet-interfaces-<switch>-<date>.csv) - the switch name is only in it")
+        return "cvports:" + m.group(1).upper()
+    return kind
+
+
+def parse_cvports(rows):
+    """CloudVision 'Ethernet interfaces' export -> {nums: row}."""
+    out = {}
+    for r in rows:
+        nums = parse_intf(r.get("Interface", ""))
+        if not nums:
+            continue
+        out[nums] = {"intf": r.get("Interface", "").strip(), "description": r.get("Description", "").strip(),
+                     "status": r.get("Operational Status", "").strip(), "speed": r.get("Speed", "").strip(),
+                     "optic": r.get("Transceiver Type", "").strip(), "mtu": r.get("MTU", "").strip(),
+                     "mode": r.get("Switch Port Type", "").strip(), "vlan": r.get("VLAN", "").strip(),
+                     "changed": r.get("Last Link Status Change", "").strip()}
+    return out
+
+
+# ---------------------------------------------------------------- Neuron signal list
+
+NEURON_COLS = {  # (group, column) in the two header rows -> field
+    ("evs neuron", "room"): "room", ("evs neuron", "neuron"): "neuron", ("evs neuron", "card"): "card",
+    ("evs neuron", "bnc conektor"): "bnc", ("evs neuron", "bnc connector"): "bnc", ("evs neuron", "chanel"): "channel",
+    ("evs neuron", "channel"): "channel", ("evs neuron", "mode(use)"): "mode",
+    ("patch panel", "room"): "pp_room", ("patch panel", "rack"): "pp_rack", ("patch panel", "pp number"): "pp",
+    ("patch panel", "port"): "pp_port", ("patch panel", "rear cable"): "rear", ("patch panel", "front cable"): "front",
+    ("endpoint", "room"): "ep_room", ("endpoint", "name"): "ep", ("endpoint", "port"): "ep_port",
+    ("signal name", ""): "signal", ("revision", "comment"): "comment", ("revision", "revised by"): "revised_by",
+    ("revision", "patch manager updated?"): "pm_updated", ("revision", "date"): "rev_date",
+    ("cerebrum source", "mnemonic"): "src_mnemonic", ("cerebrum source", "button"): "src_button",
+    ("cerebrum source", "umd"): "src_umd", ("cerebrum source", "qvest button"): "src_qbutton",
+    ("cerebrum destination", "mnemonic"): "dst_mnemonic", ("cerebrum destination", "button"): "dst_button",
+    ("cerebrum destination", "umd"): "dst_umd", ("cerebrum destination", "qvest button"): "dst_qbutton",
+    ("contribution partner", "partner"): "partner",
+}
+
+
+def parse_neuron(sheets):
+    """Neuron signal list: two header rows (group: 'EVS Neuron' / 'Patch Panel' / 'Endpoint' /
+    'Cerebrum Source' ..., then column names). One row per BNC."""
+    out = []
+    for sheet, rows in sheets.items():
+        for hi in range(1, min(len(rows), 15)):
+            cells = [c.strip().lower() for c in rows[hi]]
+            if "neuron" in cells and "card" in cells and any(c.startswith("bnc") for c in cells):
+                break
+        else:
+            continue
+        groups, head, cols, grp = rows[hi - 1], rows[hi], {}, ""
+        for i in range(max(len(groups), len(head))):
+            if i < len(groups) and groups[i].strip():
+                grp = groups[i].strip().lower()
+            col = head[i].strip().lower() if i < len(head) else ""
+            field = NEURON_COLS.get((grp, col)) or (NEURON_COLS.get(("signal name", "")) if grp == "signal name" and not col else None)
+            if field and field not in cols:
+                cols[field] = i
+        for ri in range(hi + 1, len(rows)):
+            r = rows[ri]
+            g = {f: (r[i].strip() if i < len(r) else "") for f, i in cols.items()}
+            if not (g.get("neuron") and g.get("card") and g.get("bnc")):
+                continue
+            g["device"] = "%s.%s" % (g.get("room", ""), g["neuron"]) if g.get("room") else g["neuron"]
+            g["pp_device"] = "%s.%s" % (g.get("pp_room") or g.get("room", ""), g["pp"]) if g.get("pp") else ""
+            m = re.match(r"\s*(\d+)", g.get("channel", ""))
+            g["ch"] = int(m.group(1)) if m else None
+            g["dir"] = "out" if re.search(r"out", g.get("channel", ""), re.I) else "in" if re.search(r"\bin\b", g.get("channel", ""), re.I) else "bi"
+            g["rev_date"] = excel_date(g.get("rev_date", ""))
+            g["sheet"], g["row"] = sheet, ri + 1
+            out.append(g)
+    return out
+
+
+CABLE_ID_RE = re.compile(r"^[A-Z]{1,4}\.?[A-Z]?\d{3,6}$")
 
 
 # ---------------------------------------------------------------- Patchmanager cables
@@ -601,6 +693,8 @@ class Store:
         self.mapping = {}       # PM switch name -> CV hostname (snagging list + overrides)
         self.overrides = {}
         self.future = {}        # device -> {"note", "since"}: marked "future use" in the page
+        self.neuron = []        # Neuron signal list rows (one per BNC)
+        self.cvports = {}       # CloudVision hostname (upper) -> {nums: interface row}
         self.meta = {}          # kind -> {"file", "loaded", "count"}
         self._rebuild_names()
 
@@ -619,9 +713,16 @@ class Store:
         elif kind == "snags":
             self.snags, self.mapping_snags = parse_snags(read_xlsx(data))
             n = len(self.snags)
+        elif kind == "neuron":
+            self.neuron = parse_neuron(read_xlsx(data))
+            n = len(self.neuron)
+        elif kind == "cvports":
+            host = meta_key(kind, filename).split(":", 1)[1]
+            self.cvports[host] = parse_cvports(read_csv_text(data))
+            n = len(self.cvports[host])
         else:
             raise ValueError("unknown kind %r" % kind)
-        self.meta[kind] = {"file": filename, "loaded": when, "count": n}
+        self.meta[meta_key(kind, filename)] = {"file": filename, "loaded": when, "count": n}
         self._rebuild_names()
         return n
 
@@ -648,6 +749,7 @@ class Store:
                 self.snags_by[(norm_name(sw), tuple(s["nums"]))].append(s)
         self._build_name_index()
         self._shut_cache = None
+        self._noff = None
 
     # -- device names -------------------------------------------------------------
     def _build_name_index(self):
@@ -708,6 +810,14 @@ class Store:
                     if m:
                         s["_dev"], s["_devport"] = m.group(1), m.group(2)
                 add(s["_dev"], s["_dev"], "snagging list destination")
+        for r in getattr(self, "neuron", []):
+            dev = device_for(r["device"])
+            for f, via in (("src_mnemonic", "Cerebrum source"), ("dst_mnemonic", "Cerebrum destination"),
+                           ("src_umd", "Cerebrum source UMD"), ("dst_umd", "Cerebrum destination UMD"),
+                           ("src_qbutton", "Cerebrum button"), ("dst_qbutton", "Cerebrum button"),
+                           ("signal", "Neuron signal name")):
+                if r.get(f):
+                    add(r[f], dev, "%s (%s %s BNC %s)" % (via, r["device"], r["card"], r["bnc"]))
         for pm, cv in self.mapping.items():
             add(cv, pm, "CloudVision hostname")
             add(pm, pm, "Patchmanager")
@@ -821,6 +931,8 @@ class Store:
                 card["snags"].append(s)
         card["compare"] = self._compare_device(card)
         card["future"] = self.future_of(dev)
+        card["neuron"] = self.neuron_rows(dev) if self.neuron else []
+        card["neuron_summary"] = [x for x in self.neuron_summary() if same_device(x["device"], dev)] if self.neuron else []
         return card
 
     def _compare_device(self, card):
@@ -848,6 +960,128 @@ class Store:
                 rows.append({"port": c["port"], "plan": None, "cabled": c["switch_link"], "cabled_port": c["port"],
                              "verdict": "not in plan"})
         return rows
+
+    # -- CloudVision interface exports ------------------------------------------------------
+    def cv_ports_for(self, pm, nums, modular=None):
+        """CloudVision export rows (lanes) for a switch port, [] when no export of that switch."""
+        host = (self.cv_name(pm) or "").upper()
+        rows = self.cvports.get(host) if host else None
+        if not rows:
+            return []
+        nums = tuple(nums)
+        if nums in rows:
+            return [rows[nums]]
+        if modular is None:
+            modular = bool(self.cabling) and self.cabling.is_modular(pm)
+        base = nums[:2] if modular else nums[:1]
+        return [rows[k] for k in sorted(rows) if k[:len(base)] == base]
+
+    # -- Neuron signal list ---------------------------------------------------------------------
+    def neuron_offsets(self):
+        """Per IPG card and per patch panel: a numbering offset between the Neuron list and
+        Patchmanager that holds for most rows (e.g. a whole card documented +16). Reported once,
+        instead of as one error per BNC. {("ipg", device, card) | ("pp", device): (offset, rows)}"""
+        if getattr(self, "_noff", None) is not None:
+            return self._noff
+        diffs = defaultdict(list)
+        digits = lambda p: int(re.search(r"\d+", str(p)).group()) if re.search(r"\d+", str(p or "")) else None
+        for r in self.neuron if self.cabling else []:
+            for c in self.cabling.by_id.get((r.get("rear") or "").upper(), [])[:1]:
+                ipg = next((e for e in (c.a, c.b) if same_device(e.top, r["device"])), None)
+                pp = next((e for e in (c.a, c.b) if r["pp_device"] and same_device(e.top, r["pp_device"])), None)
+                if ipg and digits(ipg.port) is not None and r.get("ch") is not None:
+                    diffs[("ipg", norm_name(r["device"]), norm_name(r["card"]))].append(digits(ipg.port) - r["ch"])
+                if pp and digits(pp.port) is not None and digits(r.get("pp_port")) is not None:
+                    diffs[("pp", norm_name(r["pp_device"]))].append(digits(pp.port) - digits(r["pp_port"]))
+        self._noff = {}
+        for k, ds in diffs.items():
+            off, n = Counter(ds).most_common(1)[0]
+            if off != 0 and n >= 4 and n >= 0.6 * len(ds):
+                self._noff[k] = (off, n)
+        return self._noff
+
+    def neuron_summary(self):
+        """One 'check' line per IPG card / patch panel with a consistent numbering offset."""
+        out = []
+        for k, (off, n) in sorted(self.neuron_offsets().items()):
+            r = next((x for x in self.neuron if (k[0] == "ipg" and norm_name(x["device"]) == k[1] and norm_name(x["card"]) == k[2])
+                      or (k[0] == "pp" and norm_name(x["pp_device"]) == k[1])), None)
+            if not r:
+                continue
+            what = "%s card %s: Patchmanager IPG port = list channel %+d" % (r["device"], r["card"], off) if k[0] == "ipg" \
+                else "%s: Patchmanager panel port = list port %+d" % (r["pp_device"], off)
+            out.append({"device": r["device"] if k[0] == "ipg" else r["pp_device"], "kind": k[0],
+                        "text": "%s for %d rows - whole %s shifted, check which document is right" % (
+                            what, n, "card" if k[0] == "ipg" else "panel")})
+        return out
+
+    def neuron_check(self, r):
+        """[(severity, text)]: does Patchmanager have the list's rear / front cable where the list
+        says? Patchmanager names the IPG port by channel + direction ('04>' / '>01'), the panel
+        port R12 / F12."""
+        out = []
+        if not self.cabling:
+            return out
+        def digits(p):
+            m = re.search(r"\d+", str(p or ""))
+            return int(m.group()) if m else None
+        rear = (r.get("rear") or "").strip()
+        if CABLE_ID_RE.match(rear):
+            cables = self.cabling.by_id.get(rear.upper(), [])
+            if not cables:
+                out.append(("warning", "Rear cable %s is not in Patchmanager" % rear))
+            for c in cables[:1]:
+                ipg = next((e for e in (c.a, c.b) if same_device(e.top, r["device"])), None)
+                pp = next((e for e in (c.a, c.b) if r["pp_device"] and same_device(e.top, r["pp_device"])), None)
+                if not ipg:
+                    out.append(("error", "Rear cable %s does not end on %s in Patchmanager: %s <-> %s" % (rear, r["device"], c.a.name(), c.b.name())))
+                else:
+                    if norm_name(r["card"]) not in (norm_name(ipg.label), norm_name(ipg.parent)):
+                        out.append(("error", "Rear cable %s: Patchmanager card %s, list card %s" % (rear, ipg.label or ipg.parent, r["card"])))
+                    pnum = digits(ipg.port)
+                    off = self.neuron_offsets().get(("ipg", norm_name(r["device"]), norm_name(r["card"])), (0,))[0]
+                    if pnum is not None and r.get("ch") is not None and off and pnum - r["ch"] == off:
+                        pass  # part of a card-wide shift, reported once (neuron_summary)
+                    elif pnum is not None and pnum not in (r.get("ch"), digits(r.get("bnc"))):
+                        out.append(("error", "Rear cable %s: Patchmanager IPG port %s, list channel %s (BNC %s)" % (rear, ipg.port, r.get("channel"), r.get("bnc"))))
+                if r["pp_device"] and not pp and (c.a.empty() or c.b.empty()):
+                    out.append(("warning", "Rear cable %s: Patchmanager has only one end connected (%s) - the panel end is missing" % (
+                        rear, (c.b if c.a.empty() else c.a).name())))
+                elif r["pp_device"] and not pp:
+                    out.append(("error", "Rear cable %s does not end on %s in Patchmanager: %s <-> %s" % (rear, r["pp_device"], c.a.name(), c.b.name())))
+                elif pp and digits(pp.port) != digits(r.get("pp_port")):
+                    off = self.neuron_offsets().get(("pp", norm_name(r["pp_device"])), (0,))[0]
+                    if not (off and digits(pp.port) is not None and digits(r.get("pp_port")) is not None
+                            and digits(pp.port) - digits(r.get("pp_port")) == off):
+                        out.append(("error", "Rear cable %s: Patchmanager panel port %s, list port %s" % (rear, pp.port, r.get("pp_port"))))
+        front = (r.get("front") or "").strip()
+        if CABLE_ID_RE.match(front):
+            cables = self.cabling.by_id.get(front.upper(), [])
+            if not cables:
+                out.append(("warning", "Front cable %s is not in Patchmanager" % front))
+            for c in cables[:1]:
+                pp = next((e for e in (c.a, c.b) if r["pp_device"] and same_device(e.top, r["pp_device"])), None)
+                other = c.b if pp is c.a else c.a
+                if r["pp_device"] and not pp:
+                    out.append(("error", "Front cable %s does not end on %s in Patchmanager: %s <-> %s" % (front, r["pp_device"], c.a.name(), c.b.name())))
+                elif pp and digits(pp.port) != digits(r.get("pp_port")):
+                    out.append(("error", "Front cable %s: Patchmanager panel port %s, list port %s" % (front, pp.port, r.get("pp_port"))))
+                ep = (r.get("ep") or "").strip()
+                # the list often writes the endpoint without the room: 'SWI 01.SDPE 1' = 'DCR.SWI 01 / SDPE 1'
+                cands = {norm_name(other.top), norm_name(other.top.split(".", 1)[-1])}
+                if pp and ep and not other.empty() and not any(c_ and c_ in norm_name(ep) for c_ in cands) \
+                        and norm_name(ep) not in norm_name(other.name()):
+                    out.append(("error", "Front cable %s goes to %s in Patchmanager, list endpoint %s %s" % (front, other.name(), ep, r.get("ep_port", ""))))
+        return out
+
+    def neuron_rows(self, dev):
+        """Neuron list rows that involve a device (the IPG, its patch panel or the endpoint), with checks."""
+        out = []
+        for r in self.neuron:
+            if same_device(r["device"], dev) or (r["pp_device"] and same_device(r["pp_device"], dev)) or \
+                    (r.get("ep") and norm_name(dev) and norm_name(r["ep"]).startswith(norm_name(dev))):
+                out.append(dict(r, checks=self.neuron_check(r)))
+        return out
 
     def _switch_ref(self, end):
         """A cable end on a switch -> {switch, nums} for the port card, or None."""
@@ -930,6 +1164,7 @@ class Store:
                               and parse_intf(e.get("interface")) == nums]
         if self.equipment:
             card["equipment"] = self.equipment.get(pm)
+        card["cv_ports"] = self.cv_ports_for(pm, nums, modular)
         card["compare"] = self._compare_port(card)
         card["shut"] = self.shut_for(pm, nums) if with_shut else None
         card["checks"] = self._checks(card)
@@ -953,6 +1188,12 @@ class Store:
             if not p["free"]:
                 rows.append({"source": "IP list", "device": p.get("_dev") or p["equipment"], "port": p.get("_devport") or p["eqport"],
                              "detail": "%s r%s, VLAN %s" % (p["sheet"], p["row"], p["vlan"])})
+        for lane in card.get("cv_ports", [])[:1]:
+            desc = lane["description"].strip(" *")
+            if desc:
+                dev, dport = self.device_split(desc)
+                rows.append({"source": "Switch description (CloudVision)", "device": dev, "port": dport,
+                             "detail": "%s %s" % (lane["intf"], lane["status"])})
         seen = set()
         for s in sorted(card["snags"], key=lambda x: x.get("first") or "", reverse=True):
             if s.get("_dev") and (s["_dev"], s.get("_devport")) not in seen and tuple(s["nums"]) == tuple(card["nums"]):
@@ -967,6 +1208,9 @@ class Store:
                 r["verdict"] = "ref" if r is ref else ""
             elif not norm_name(r["device"]) or str(r["device"]).startswith("."):
                 r["verdict"] = "incomplete"  # plan row without device name ('.ETH.1 -- CS9/Ceiling')
+            elif r["source"].startswith("Switch description") and re.fullmatch(r"[A-Za-z0-9\-]+\d", r["device"]) \
+                    and not self.pm_name(r["device"]):
+                r["verdict"] = "unmapped"  # a CloudVision hostname without Patchmanager name (Switches tab)
             elif ref.get("open") and not same_device(r["device"], ref["device"]):
                 r["verdict"] = "unknown"   # cabling stops at a panel: the device behind it is not documented
             elif ref.get("assumed") and not same_device(r["device"], ref["device"]):
@@ -1011,6 +1255,10 @@ class Store:
         live = [p for p in card["plan"] if not p["free"]]
         cmp_rows = card.get("compare", [])
         ref = next((r for r in cmp_rows if r.get("verdict") == "ref"), None)
+        for r in cmp_rows:
+            if r["verdict"] == "unmapped":
+                out.append(("info", "The switch description names CloudVision host %s, which has no Patchmanager name yet%s - add it under Switches." % (
+                    r["device"], " (probably %s)" % ref["device"] if ref and self.is_switch(ref["device"]) else "")))
         if any(r["verdict"] == "trunk" for r in cmp_rows):
             out.append(("warn", "IP list names another device, but the Patchmanager path crosses a trunk where the port "
                                 "number is assumed - check the trunk on site before trusting either."))
@@ -1037,6 +1285,23 @@ class Store:
                 out.append(("info", "Port %s is reserved in Patchmanager." % p))
         if not card["cv_switch"]:
             out.append(("warn", "No CloudVision hostname known for %s (add it under Switches)." % card["switch"]))
+        lanes = card.get("cv_ports") or []
+        if lanes:
+            up = [l for l in lanes if l["status"] == "Connected"]
+            documented = bool(card["paths"]) or bool(live)
+            fully = bool(far_ends and any(p["status"] == "complete" for p in card["paths"])) or bool(live)
+            states = ", ".join("%s %s" % (l["intf"], l["status"]) for l in lanes)
+            if fully and not up:
+                out.append(("bad", "Documented as connected, but the link is DOWN in CloudVision (%s)." % states))
+            elif up and not documented:
+                desc = lanes[0]["description"]
+                out.append(("warn", "Link is UP in CloudVision, but nothing is documented on this port (%s)%s." % (
+                    states, " - only the switch description says %s" % desc if desc else "")))
+            elif up and card.get("shut"):
+                out.append(("bad", "Marked future use, but the link is UP in CloudVision."))
+            elif up:
+                l = up[0]
+                out.append(("ok", "Link up in CloudVision: %s %s %s (last change %s)." % (l["intf"], l["speed"], l["optic"], l["changed"])))
         if any(s["open"] for s in card["snags"]):
             out.append(("warn", "Open entry in the snagging list."))
         return out
@@ -1337,6 +1602,20 @@ class Store:
                 continue
             covered.add((nsw, nums))
             rows += self._overview_rows(self.port_card(p["switch"], nums, cv_events))
+        # ports only CloudVision knows (link up or a description, nothing documented)
+        for host, ports in self.cvports.items():
+            pm = self.pm_name(host) or host
+            nsw = norm_name(pm)
+            modular = bool(self.cabling) and self.cabling.is_modular(pm)
+            done = set()
+            for k, l in sorted(ports.items()):
+                base_nums = k[:2] if modular else k[:1]
+                if (nsw, base_nums) in covered or base_nums in done:
+                    continue
+                if l["status"] != "Connected" and not l["description"]:
+                    continue
+                done.add(base_nums)
+                rows += self._overview_rows(self.port_card(pm, base_nums, cv_events))
         return rows
 
     def _overview_rows(self, card):
@@ -1346,7 +1625,11 @@ class Store:
         status = ("mismatch" if "device" in verdicts else "check" if "trunk" in verdicts else
                   "port differs" if "port" in verdicts else "")
         open_snags = sum(1 for s in card["snags"] if s["open"])
+        lanes = card.get("cv_ports") or []
+        up = sum(1 for l in lanes if l["status"] == "Connected")
+        link = "" if not lanes else lanes[0]["status"] if len(lanes) == 1 else "%d/%d up" % (up, len(lanes))
         base = {"switch": card["switch"], "cv_switch": card["cv_switch"], "nums": card["nums"], "intf": card["intf"],
+                "link": link, "link_up": up > 0, "cv_desc": lanes[0]["description"] if lanes else "",
                 "iplist": plan, "snags": open_snags, "events": len(card["events"]),
                 "future": (card.get("shut") or {}).get("device", "")}
         if not card["paths"]:
@@ -1419,6 +1702,12 @@ class Store:
                 pm = self.pm_name(sw) or sw
                 for nums, _ in self.cabling.ports_of(pm):
                     ports.add((pm, nums))
+        for host, cvp in self.cvports.items():
+            pm = self.pm_name(host) or host
+            modular = bool(self.cabling) and self.cabling.is_modular(pm)
+            for k, l in cvp.items():
+                if l["status"] == "Connected" or l["description"]:
+                    ports.add((pm, k[:2] if modular else k[:1]))
         out, seen = [], set()
         for sw, nums in sorted(ports, key=lambda x: (norm_name(x[0]), x[1])):
             card = self.port_card(sw, nums)
@@ -1431,9 +1720,11 @@ class Store:
             for r in card["compare"]:
                 if r["verdict"] in ("ok", "ref", ""):
                     continue
-                sev = {"device": "error", "port": "warning", "trunk": "check", "unknown": "info", "incomplete": "info"}[r["verdict"]]
+                sev = {"device": "error", "port": "warning", "trunk": "check", "unknown": "info", "incomplete": "info",
+                       "unmapped": "info"}[r["verdict"]]
                 kind = {"device": "different device", "port": "different port", "trunk": "different device (trunk assumed)",
-                        "unknown": "cabling ends at panel", "incomplete": "plan without device name"}[r["verdict"]]
+                        "unknown": "cabling ends at panel", "incomplete": "IP list without device name",
+                        "unmapped": "CloudVision hostname not mapped"}[r["verdict"]]
                 if r["source"] == "Patchmanager cabling":
                     kind = "two cables on one port"
                 out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"],
@@ -1441,12 +1732,29 @@ class Store:
                             "says": (r["device"] + " " + (r["port"] or "")).strip(), "reference": ref["source"] if ref else "",
                             "ref_says": (ref["device"] + " " + (ref["port"] or "")).strip() if ref else "",
                             "detail": r.get("detail", "")})
+            for lvl, text in card["checks"]:
+                if "in CloudVision" in text and lvl in ("bad", "warn"):
+                    out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"],
+                                "nums": card["nums"], "severity": "error" if lvl == "bad" else "warning",
+                                "kind": "documented, link down" if "DOWN" in text else "link up, not documented"
+                                if "nothing is documented" in text else "future use, link up",
+                                "source": "CloudVision export", "says": text, "reference": "", "ref_says": "", "detail": ""})
             if self.cabling is not None and not pm_paths and any(not p["free"] for p in card["plan"]):
                 live = [p for p in card["plan"] if not p["free"]][0]
                 out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"], "nums": card["nums"],
                             "severity": "warning", "kind": "in IP list, no cable in Patchmanager", "source": "IP list",
                             "says": live["device"], "reference": "Patchmanager cabling", "ref_says": "(nothing)",
                             "detail": "%s r%s" % (live["sheet"], live["row"])})
+        for sm in self.neuron_summary():
+            out.append({"switch": sm["device"], "cv_switch": "", "intf": "(whole %s)" % ("card" if sm["kind"] == "ipg" else "panel"),
+                        "nums": [], "device": sm["device"], "severity": "check", "kind": "Neuron list vs Patchmanager - numbering shift",
+                        "source": "Neuron signal list", "says": sm["text"], "reference": "Patchmanager", "ref_says": "", "detail": ""})
+        for r in self.neuron:
+            for sev, text in self.neuron_check(r):
+                out.append({"switch": r["device"], "cv_switch": "", "intf": "card %s BNC %s" % (r["card"], r["bnc"]),
+                            "nums": [], "device": r["device"], "severity": sev, "kind": "Neuron list vs Patchmanager",
+                            "source": "Neuron signal list", "says": text, "reference": "Patchmanager", "ref_says": "",
+                            "detail": "%s r%s" % (r["sheet"], r["row"])})
         return out
 
     def status(self):

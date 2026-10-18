@@ -68,7 +68,14 @@ CV = {"enabled": False, "url": "", "error": "", "devices": [], "events": [], "de
       "events_at": "", "raw_sample": ""}
 CV_WAKE = threading.Event()
 KIND_NAMES = {"cables": "Patchmanager cables", "equipment": "Patchmanager equipment", "portplan": "IP list",
-              "snags": "snagging list"}
+              "snags": "snagging list", "neuron": "Neuron signal list", "cvports": "CloudVision ports"}
+FIXED_KINDS = ("cables", "equipment", "portplan", "snags", "neuron")
+
+
+def kind_name(key):
+    """'cvports:DCBESWLIVSPI001' -> 'CloudVision ports DCBESWLIVSPI001'."""
+    k, _, host = key.partition(":")
+    return (KIND_NAMES.get(k, k) + (" " + host if host else ""))
 MISMATCH_CACHE = {"key": None, "rows": []}
 PORTS_CACHE = {"key": None, "rows": []}
 
@@ -231,14 +238,14 @@ def load_saved():
         meta = json.loads(META_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    for kind, m in meta.items():
+    for key, m in meta.items():
         f = DATA_DIR / m.get("stored", "")
         if f.is_file():
             try:
-                STORE.load(kind, m["file"], f.read_bytes(), when=m.get("loaded"))
-                log.info("loaded %s: %s (%s)", KIND_NAMES.get(kind, kind), m["file"], STORE.meta[kind]["count"])
+                STORE.load(key.split(":")[0], m["file"], f.read_bytes(), when=m.get("loaded"))
+                log.info("loaded %s: %s (%s)", kind_name(key), m["file"], STORE.meta[key]["count"])
             except Exception as e:  # a broken file must not stop the service
-                log.warning("could not load %s from %s: %s", kind, f, e)
+                log.warning("could not load %s from %s: %s", key, f, e)
     try:
         STORE.set_overrides(json.loads(SWITCHES_FILE.read_text(encoding="utf-8")))
     except (OSError, ValueError):
@@ -287,6 +294,11 @@ def scan_sources(limit_per_dir=300):
                 except Exception:
                     SCAN["kinds"][key] = None
             kind = SCAN["kinds"][key]
+            if kind == "cvports":
+                try:
+                    kind = model.meta_key(kind, f.name)
+                except ValueError:
+                    kind = None
             if kind:
                 fid = hashlib.sha1(("%s|%s|%s" % key).encode()).hexdigest()[:16]
                 SCAN["files"][fid] = str(f)
@@ -297,7 +309,8 @@ def scan_sources(limit_per_dir=300):
         meta = json.loads(META_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
-    for kind in ("cables", "equipment", "portplan", "snags"):
+    extra = sorted({c["kind"] for c in cands if c["kind"].startswith("cvports:")} | {k for k in meta if k.startswith("cvports:")})
+    for kind in list(FIXED_KINDS) + extra:
         mine = sorted((c for c in cands if c["kind"] == kind), key=lambda c: c["mtime"], reverse=True)[:5]
         src = meta.get(kind, {}).get("source")
         for c in mine:
@@ -314,7 +327,7 @@ def scan_sources(limit_per_dir=300):
             newer = newest["mtime"] > cur.get("loaded", "")
         else:
             newer = True
-        out[kind] = {"current": cur, "candidates": mine, "newer": newer}
+        out[kind] = {"current": cur, "candidates": mine, "newer": newer, "label": kind_name(kind)}
     return {"dirs": [str(d) + ("" if d.is_dir() else "  (missing)") for d in import_dirs()], "kinds": out}
 
 
@@ -322,24 +335,27 @@ def import_file(filename, data, source=None):
     kind = model.detect_kind(filename, data)
     if not kind:
         raise ValueError("Not recognised. Expected: Patchmanager cable export (CSV), Patchmanager equipment "
-                         "export (CSV), IP list View (xlsx) or Connectivity snagging list (xlsx).")
+                         "export (CSV), IP list View (xlsx), Connectivity snagging list (xlsx), Neuron signal list "
+                         "(xlsx) or a CloudVision Ethernet-interfaces export (CSV).")
+    key = model.meta_key(kind, filename)          # 'cvports:<HOST>' - one per switch
     with LOCK:
         n = STORE.load(kind, filename, data)
         ext = filename.rsplit(".", 1)[1].lower()
-        stored = "%s.%s" % (kind, ext)
-        for old in DATA_DIR.glob(kind + ".*"):
+        base = key.replace(":", "-")
+        stored = "%s.%s" % (base, ext)
+        for old in DATA_DIR.glob(base + ".*"):
             old.unlink()
         (DATA_DIR / stored).write_bytes(data)
         try:
             meta = json.loads(META_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = {}
-        meta[kind] = {"file": filename, "stored": stored, "loaded": STORE.meta[kind]["loaded"]}
+        meta[key] = {"file": filename, "stored": stored, "loaded": STORE.meta[key]["loaded"]}
         if source:
-            meta[kind]["source"] = source
+            meta[key]["source"] = source
         META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    log.info("IMPORT %s: %s (%d rows)", KIND_NAMES.get(kind, kind), filename, n)
-    return kind, n
+    log.info("IMPORT %s: %s (%d rows)", kind_name(key), filename, n)
+    return key, n
 
 
 # ---------------------------------------------------------------- CloudVision poll

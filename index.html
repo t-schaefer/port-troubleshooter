@@ -196,7 +196,7 @@
     <div class="chips" id="pchips"></div>
     <div class="fsum" id="psum"></div>
     <div class="tablewrap"><table id="ptable">
-      <thead><tr><th>Switch</th><th>Port</th><th>Device</th><th>Device port</th><th>Patch panels</th><th>Cables</th><th>IP list says</th><th>Status</th></tr></thead>
+      <thead><tr><th>Switch</th><th>Port</th><th>Device</th><th>Device port</th><th>Patch panels</th><th>Cables</th><th>IP list says</th><th>Status</th><th>Link (CV)</th></tr></thead>
       <tbody></tbody></table></div>
     <p class="muted" id="pfoot"></p>
   </section>
@@ -254,7 +254,7 @@
     <label class="drop" id="upddrop" style="margin-top:0">
       <input type="file" id="updfile" accept=".csv,.xlsx,.xlsm" multiple class="hidden">
       <b>Upload from this PC:</b> drop the export files here or <span class="lnk">click to choose files</span><br>
-      <span class="muted">Patchmanager cables + equipment (CSV), IP list View (xlsx), snagging list (xlsx) – several at once is fine, the type is detected automatically.</span>
+      <span class="muted">Patchmanager cables + equipment (CSV), IP list View (xlsx), snagging list (xlsx), Neuron signal list (xlsx), CloudVision Ethernet-interfaces exports (CSV, one per switch – keep CloudVision's file name) – several at once is fine, the type is detected automatically.</span>
     </label>
     <div id="updlog" class="muted" style="margin:6px 0 4px"></div>
     <h2 style="margin-top:16px">…or take the newest files from the server's import folder</h2>
@@ -332,9 +332,10 @@ window.addEventListener("popstate", route);
 // ------------------------------------------------------------- status
 async function loadStatus() {
   try { STATUS = await api("/api/status"); } catch (e) { $("#hdrstatus").textContent = "service not reachable: " + e.message; return; }
-  const m = STATUS.store.meta, n = Object.keys(m).length, cv = STATUS.cv;
+  const m = STATUS.store.meta, n = CORE.filter(k => m[k]).length, cv = STATUS.cv;
+  const ncv = Object.keys(m).filter(k => k.startsWith("cvports:")).length;
   renderNoData(n);
-  $("#hdrstatus").innerHTML = `${n}/4 inputs loaded · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
+  $("#hdrstatus").innerHTML = `${n}/4 inputs${m.neuron ? " + Neuron list" : ""}${ncv ? " + " + ncv + " CV port export" + (ncv > 1 ? "s" : "") : ""} · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
   if (!$("#tab-data").classList.contains("hidden")) renderData();
 }
 
@@ -344,7 +345,7 @@ async function renderNoData(n) {
   if (n >= 4) { box.classList.add("hidden"); return; }
   let dirs = [];
   try { dirs = (SRC || await api("/api/sources")).dirs; } catch {}
-  const missing = Object.entries(KINDS).filter(([k]) => !STATUS.store.meta[k]).map(([, l]) => l);
+  const missing = CORE.filter(k => !STATUS.store.meta[k]).map(k => KINDS[k]);
   box.className = "nodata";
   box.innerHTML = `<h3>${n ? "Some data is missing" : "No data loaded yet"}</h3>
     <div class="muted">Missing: ${missing.map(esc).join(", ")}. Your data is not in the git repository (it is project data) – load it once on this server, it is kept in <span class="mono">data\</span> from then on.</div>
@@ -400,6 +401,8 @@ function renderPort(c) {
     </div>
     <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul>
     ${compareTable(c.compare)}
+    ${c.cv_ports && c.cv_ports.length ? `<h2>CloudVision port status <span class="muted">(export)</span></h2><div class="tablewrap"><table><thead><tr><th>Interface</th><th>Status</th><th>Speed</th><th>Optic</th><th>Description</th><th>Last change</th></tr></thead><tbody>${
+      c.cv_ports.map(l => `<tr><td class="mono">${esc(l.intf)}</td><td><span class="tag ${l.status === "Connected" ? "ok" : l.status === "Down" ? "bad" : ""}">${esc(l.status)}</span></td><td>${esc(l.speed)}</td><td>${esc(l.optic)}</td><td>${esc(l.description)}</td><td class="muted">${esc(l.changed)}</td></tr>`).join("")}</tbody></table></div>` : ""}
     <div class="cols">
       <div><h2>Documented cable path <span class="muted">(Patchmanager)</span></h2>${c.paths.length ? c.paths.map(renderPath).join("") : '<p class="empty">No cable on this port in the Patchmanager export.</p>'}</div>
       <div>
@@ -420,7 +423,7 @@ function renderPort(c) {
 }
 const VERDICT = { ref: '<span class="tag">reference</span>', ok: '<span class="tag ok">same</span>', device: '<span class="tag bad">other device</span>',
   port: '<span class="tag warn">other port</span>', trunk: '<span class="tag warn">differs – trunk assumed</span>', unknown: '<span class="tag">cabling ends at panel</span>',
-  incomplete: '<span class="tag">no device name</span>' };
+  incomplete: '<span class="tag">no device name</span>', unmapped: '<span class="tag">hostname not mapped</span>' };
 function compareTable(rows) {
   if (!rows || !rows.length) return "";
   return `<h2>Sources compared</h2><div class="tablewrap"><table><thead><tr><th>Source</th><th>Device</th><th>Device port</th><th>Detail</th><th></th></tr></thead><tbody>${
@@ -517,6 +520,19 @@ async function notesSection(box, target) {
   if (add) add.onclick = () => { form.work.checked = true; form.text.focus(); form.scrollIntoView({ behavior: "smooth", block: "center" }); form.text.placeholder = "What is the problem? It goes on the worklist until someone marks it done."; };
 }
 
+function neuronTable(d) {
+  const bad = d.neuron.filter(r => r.checks.length).length;
+  return `<h2>Neuron signal list <span class="muted">(${d.neuron.length} BNC, ${bad} differ from Patchmanager)</span></h2>
+    ${(d.neuron_summary || []).map(x => `<ul class="checks"><li class="warn">${esc(x.text)}</li></ul>`).join("")}
+    <div class="tablewrap"><table><thead><tr><th>IPG / card / BNC</th><th>Channel · mode</th><th>Patch panel</th><th>Rear · front cable</th><th>Endpoint</th><th>Cerebrum</th><th>Check</th></tr></thead><tbody>${
+    d.neuron.map(r => `<tr class="${r.checks.some(c => c[0] === "error") ? "v-device" : r.checks.length ? "v-port" : ""}">
+      <td><b>${esc(r.device)}</b> ${esc(r.card)} / ${esc(r.bnc)}</td><td>${esc(r.channel)}<br><span class="muted">${esc(r.mode)}</span></td>
+      <td>${r.pp_device ? devA(r.pp_device) + " : " + esc(r.pp_port) : ""}</td><td class="mono">${esc(r.rear)}${r.front ? " · " + esc(r.front) : ""}</td>
+      <td>${esc(r.ep)} ${esc(r.ep_port)}${r.signal ? '<br><span class="muted">' + esc(r.signal) + "</span>" : ""}</td>
+      <td class="muted" style="font-size:.78rem">${esc(r.src_mnemonic)}${r.src_umd ? " · " + esc(r.src_umd) : ""}<br>${esc(r.dst_mnemonic)}${r.dst_umd ? " · " + esc(r.dst_umd) : ""}</td>
+      <td>${r.checks.length ? r.checks.map(c => `<div class="fl ${c[0]}" style="font-size:.78rem">${esc(c[1])}</div>`).join("") : '<span class="tag ok">matches</span>'}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
 // ------------------------------------------------------------- device card
 async function openDevice(name) {
   setHash("device=" + name); $("#dtitle").textContent = name;
@@ -551,6 +567,7 @@ async function openDevice(name) {
     ${plan ? `<div class="tablewrap"><table><thead><tr><th>Switch port</th><th>Device</th><th>VLAN</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : '<p class="empty">Not in the IP list.</p>'}
     <h2>Snagging list <span class="muted">(${d.snags.length})</span></h2>
     ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th><th>Who / Jira</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
+    ${d.neuron && d.neuron.length ? neuronTable(d) : ""}
     <div data-notes></div>
   </div>`;
   notesSection(box, { type: "device", device: d.device });
@@ -578,8 +595,8 @@ async function openUpdate() {
   $("#updmodal").classList.remove("hidden"); $("#updmsg").textContent = "scanning folders…";
   if (!await scanSources()) return;
   $("#upddirs").innerHTML = "Folders: " + SRC.dirs.map(d => `<span class="mono">${esc(d)}</span>`).join(" · ");
-  $("#updtable tbody").innerHTML = Object.entries(KINDS).map(([k, label]) => {
-    const e = SRC.kinds[k] || { candidates: [] }, cur = e.current;
+  $("#updtable tbody").innerHTML = Object.keys(SRC.kinds).map(k => {
+    const label = kindLabel(k), e = SRC.kinds[k] || { candidates: [] }, cur = e.current;
     const opts = e.candidates.map(c => `<option value="${c.id}">${esc(c.name)} – ${esc(c.mtime.replace("T", " "))}${c.loaded ? " (loaded)" : ""}</option>`).join("");
     return `<tr><td><input type="checkbox" data-k="${k}" ${e.newer ? "checked" : ""} ${e.candidates.length ? "" : "disabled"}></td>
       <td><b>${esc(label)}</b>${e.newer ? ' <span class="tag warn">newer file</span>' : e.candidates.length ? ' <span class="tag ok">up to date</span>' : ""}</td>
@@ -607,7 +624,7 @@ $("#updgo").onclick = async () => {
   $("#updmsg").textContent = "importing…";
   try {
     const r = await api("/api/import-latest", { method: "POST", body: JSON.stringify({ ids }) });
-    toast("Imported: " + r.imported.map(x => KINDS[x.kind] + " (" + x.count + ")").join(", "));
+    toast("Imported: " + r.imported.map(x => kindLabel(x.kind) + " (" + x.count + ")").join(", "));
     MIS = null; PORTS = null; DEVS = null; await loadStatus(); loadWork(); loadShutCount(); openUpdate();
     if (CURTAB === "mis") loadMis();
   } catch (e) { $("#updmsg").textContent = e.message; }
@@ -735,7 +752,7 @@ function renderPorts() {
     .map(([k, l]) => `<button class="chip ${k === pstat ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
   $("#pchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { pstat = b.dataset.s; store.set("pstat", pstat); renderPorts(); });
   let rows = PORTS.map((p, i) => [p, i]).filter(([p]) => (!pstat || p.status === pstat) &&
-    (!q || [p.switch, p.cv_switch, p.intf, p.device, p.device_port, p.panels.join(" "), p.cables.join(" "), p.iplist, p.end].join(" ").toLowerCase().includes(q)));
+    (!q || [p.switch, p.cv_switch, p.intf, p.device, p.device_port, p.panels.join(" "), p.cables.join(" "), p.iplist, p.end, p.link, p.cv_desc].join(" ").toLowerCase().includes(q)));
   // grouping: by switch, by device, or by patch panel (a port through 2 panels is listed under both)
   const keyOf = p => pgroup === "switch" ? [p.switch] : pgroup === "device" ? [p.device || p.end || "(no device)"] : (p.panels.length ? p.panels : ["(no patch panel)"]);
   const groups = new Map();
@@ -747,17 +764,18 @@ function renderPorts() {
     if (shown > 2500) break;
     const g = groups.get(k).sort(natural), bad = g.filter(([p]) => p.status !== "ok").length;
     const head = k.startsWith("(") ? esc(k) : devA(k);
-    html += `<tr class="grp"><td colspan="8">${head} <span class="muted">· ${g.length} port${g.length > 1 ? "s" : ""}${bad ? " · " + bad + " not ok" : ""}</span></td></tr>`;
+    html += `<tr class="grp"><td colspan="9">${head} <span class="muted">· ${g.length} port${g.length > 1 ? "s" : ""}${bad ? " · " + bad + " not ok" : ""}</span></td></tr>`;
     for (const [p, i] of g) {
       shown++;
       html += `<tr class="click" data-i="${i}"><td>${devA(p.switch)}</td><td class="mono">${esc(p.intf)}</td>
         <td>${p.device ? devA(p.device) : '<span class="muted">' + esc(p.end || "–") + "</span>"}${p.future ? ' <span class="tag bad">future</span>' : ""}</td>
         <td>${esc(p.device_port)}</td><td>${p.panels.map(x => `<span class="pnl">${devA(x)}</span>`).join("")}</td>
         <td class="mono" style="font-size:.78rem">${esc(p.cables.join(" + "))}${p.length ? '<br><span class="muted">' + esc(p.length) + "</span>" : ""}</td>
-        <td>${esc(p.iplist)}</td><td><span class="st ${p.status.replace(/ /g, "")}">${esc(p.status)}</span>${p.snags ? ' <span class="tag warn">' + p.snags + " snag</span>" : ""}${p.events ? ' <span class="tag bad">CV</span>' : ""}</td></tr>`;
+        <td>${esc(p.iplist)}</td><td><span class="st ${p.status.replace(/ /g, "")}">${esc(p.status)}</span>${p.snags ? ' <span class="tag warn">' + p.snags + " snag</span>" : ""}${p.events ? ' <span class="tag bad">CV</span>' : ""}</td>
+        <td>${p.link ? `<span class="tag ${p.link_up ? "ok" : p.link === "Down" ? "bad" : ""}" title="${esc(p.cv_desc)}">${esc(p.link)}</span>` : '<span class="muted">–</span>'}</td></tr>`;
     }
   }
-  $("#ptable tbody").innerHTML = html || '<tr><td colspan="8" class="empty">Nothing for this filter.</td></tr>';
+  $("#ptable tbody").innerHTML = html || '<tr><td colspan="9" class="empty">Nothing for this filter.</td></tr>';
   $("#ptable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const p = PORTS[+tr.dataset.i]; selectRow(tr); openPort(p.switch, intf(p.nums)); });
   const act = [pstat && "status <b>" + esc(pstat) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#psum").innerHTML = `Showing <b>${rows.length}</b> of ${PORTS.length} ports in <b>${keys.length}</b> groups · grouped by <b>${{ switch: "switch", device: "device", panel: "patch panel" }[pgroup]}</b>${act.length ? " · filtered by " + act.join(", ") : ""}
@@ -817,7 +835,7 @@ function renderMis() {
     <td><b>${esc(m.switch)}</b> <span class="mono">${esc(m.intf)}</span><br><span class="muted mono">${esc(m.cv_switch)}</span></td>
     <td><span class="sev ${m.severity}">${esc(m.kind)}</span></td><td>${esc(m.source)}:<br><b>${esc(m.says)}</b></td>
     <td>${esc(m.reference)}:<br>${esc(m.ref_says)}</td><td class="muted">${esc(m.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
-  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; selectRow(tr); openPort(m.switch, intf(m.nums)); });
+  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; selectRow(tr); m.nums && m.nums.length ? openPort(m.switch, intf(m.nums)) : openDevice(m.device || m.switch); });
   const sevs2 = { error: "errors", warning: "warnings", check: "check on site", info: "info" };
   const act = [msev && "severity <b>" + esc(sevs2[msev] || msev) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#msum").innerHTML = `Showing <b>${rows.length}</b> of ${MIS.length}${act.length ? " · filtered by " + act.join(", ") : " · no filter"} · sorted by switch and port
@@ -850,11 +868,15 @@ $("#ssave").onclick = async () => {
 };
 
 // ------------------------------------------------------------- data + import
-const KINDS = { cables: "Patchmanager cables", equipment: "Patchmanager equipment", portplan: "IP list (View xlsx)", snags: "Connectivity snagging list" };
+const KINDS = { cables: "Patchmanager cables", equipment: "Patchmanager equipment", portplan: "IP list (View xlsx)", snags: "Connectivity snagging list",
+  neuron: "Neuron signal list" };
+const CORE = ["cables", "equipment", "portplan", "snags"];
+const kindLabel = k => KINDS[k] || (k.startsWith("cvports:") ? "CloudVision ports " + k.slice(8) : k);
 async function renderData() {
   if (!STATUS) return;
   const m = STATUS.store.meta;
-  $("#datagrid").innerHTML = Object.entries(KINDS).map(([k, l]) => `<div class="ds"><h4><span class="dot ${m[k] ? "ok" : ""}"></span>${l}</h4>
+  const keys = [...Object.keys(KINDS), ...Object.keys(m).filter(k => k.startsWith("cvports:")).sort()];
+  $("#datagrid").innerHTML = keys.map(k => [k, kindLabel(k)]).map(([k, l]) => `<div class="ds"><h4><span class="dot ${m[k] ? "ok" : ""}"></span>${esc(l)}</h4>
     ${m[k] ? `<div class="muted">${esc(m[k].file)}<br>${m[k].count} rows · imported ${esc(m[k].loaded.replace("T", " "))}</div>` : '<div class="muted">not imported</div>'}</div>`).join("");
   const cv = STATUS.cv; let raw = "";
   if (cv.enabled) { try { raw = (await api("/api/cv")).sample; } catch {} }
@@ -871,7 +893,7 @@ async function upload(files, log = $("#importlog")) {
     log.insertAdjacentHTML("beforeend", `<div>${esc(f.name)}: uploading…</div>`);
     const line = log.lastElementChild;
     try { const r = await api("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: await f.arrayBuffer() });
-      line.innerHTML = `<span class="okt">${esc(f.name)}: ${esc(KINDS[r.kind])}, ${r.count} rows</span>`; }
+      line.innerHTML = `<span class="okt">${esc(f.name)}: ${esc(kindLabel(r.kind))}, ${r.count} rows</span>`; }
     catch (e) { line.innerHTML = `<span class="err">${esc(f.name)}: ${esc(e.message)}</span>`; }
   }
   MIS = null; PORTS = null; DEVS = null; await loadStatus(); loadWork(); loadShutCount();
