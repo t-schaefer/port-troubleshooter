@@ -73,6 +73,8 @@ WORKLIST_COLS = [("source", "Source"), ("switch", "Switch (Patchmanager)"), ("cv
 SHUT_COLS = [("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"),
              ("device", "Future device"), ("device_port", "Device port"), ("via", "Found via"), ("source", "Marked by"),
              ("note", "Note")]
+CHAIN_COLS = [("severity", "Severity"), ("fault", "Fault"), ("depth", "Step"), ("from", "From device"),
+              ("from_port", "From port"), ("to", "To device"), ("to_port", "To port"), ("cables", "Cables")]
 MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Switch (Patchmanager)"),
                  ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"), ("source", "Source"), ("says", "Source says"),
                  ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
@@ -262,14 +264,26 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/mismatches":
                 with LOCK:
                     self._json({"items": mismatches()})
+            elif u.path == "/api/chain":
+                name = q.get("device", "").strip()
+                if not name or len(name) > 120:
+                    return self._err("bad device name")
+                with LOCK:
+                    self._json(STORE.signal_chain(name, CV["events"]))
             elif u.path == "/api/future":
                 with LOCK:
                     rows = STORE.ports_to_shut()
                     self._json({"devices": STORE.future_devices(), "ports": rows, "eos": model.eos_shutdown(rows)})
-            elif u.path in ("/export/worklist.csv", "/export/mismatches.csv", "/export/shut.csv", "/export/shut-eos.txt"):
+            elif u.path in ("/export/worklist.csv", "/export/mismatches.csv", "/export/shut.csv", "/export/shut-eos.txt",
+                            "/export/chain.csv"):
                 ctype, ext = "text/csv; charset=utf-8", "csv"
                 with LOCK:
-                    if u.path == "/export/worklist.csv":
+                    if u.path == "/export/chain.csv":
+                        dev = q.get("device", "").strip()[:120]
+                        ch = STORE.signal_chain(dev, CV["events"])
+                        body = to_csv(ch["faults"], CHAIN_COLS)
+                        name = "chain-" + re.sub(r"[^\w.\-]+", "_", ch["root"])
+                    elif u.path == "/export/worklist.csv":
                         body, name = to_csv(STORE.worklist(CV["events"]), WORKLIST_COLS), "worklist"
                     elif u.path == "/export/mismatches.csv":
                         body, name = to_csv(mismatches(), MISMATCH_COLS), "mismatches"

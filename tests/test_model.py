@@ -114,6 +114,9 @@ class ModelTest(unittest.TestCase):
         self.s.set_future({})
         self.assertFalse(self.s.port_card("SW 01", (12,))["shut"])
 
+    def test_p2p_destination(self):
+        self.assertEqual(self.s.device_split("P2P_swhost01_Ethernet15/2"), ("SW 01", "Ethernet15/2"))
+
     def test_same_port(self):
         self.assertTrue(model.same_port("PCLAN1", "PC LAN 1"))
         self.assertTrue(model.same_port("ETH.1", "Eth"))

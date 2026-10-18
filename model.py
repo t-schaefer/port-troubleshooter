@@ -716,6 +716,10 @@ class Store:
         'DCR.ESW B01.50' -> ('DCR.ESW B01', '50'). Unknown: (name, '')."""
         name = str(name or "").strip(" *")
         known = getattr(self, "_known", {})
+        # CloudVision-style link description: 'P2P_dcreswcprcor001_Ethernet15/2'
+        m = re.match(r"^P2P_([\w\-]+?)_((?:Ethernet|Et)\d+(?:/\d+)*)$", name, re.I)
+        if m:
+            return self.pm_name(m.group(1)) or m.group(1), m.group(2)
         # 'DCRSRVIRAXSV003 *DCR.VS 23' / 'A; B': several names - take the first known one
         pieces = [x.strip() for x in re.split(r"[*;]|\s{2,}", name) if x.strip()]
         if len(pieces) > 1:
@@ -1172,6 +1176,138 @@ class Store:
         sw = norm_name(self.pm_name(switch) or switch)
         return keys.get((sw, n)) or keys.get((sw, n[:2])) or keys.get((sw, n[:1]))
 
+    # -- signal chain --------------------------------------------------------------------
+    def device_links(self, dev):
+        """Every documented link of a device: its port -> through panels -> the next device.
+        [{from_port, to, to_port, to_end, path, cables}] (to = '' when the path dead-ends)."""
+        out = []
+        if not self.cabling:
+            return out
+        for c, s in sorted(self.cabling.by_top.get(norm_name(dev), []), key=lambda cs: port_sort(getattr(cs[0], cs[1]))):
+            me = getattr(c, s)
+            path = self.cabling.trace(c, s)
+            ends = [h for h in path["hops"] if h["type"] == "end" and not h.get("missing")]
+            far = ends[-1] if len(ends) > 1 else None
+            to = far.get("top", "") if far and not is_passive(far) else ""
+            out.append({"from_port": end_port(me.to_dict()), "to": to, "to_port": end_port(far) if far else "",
+                        "to_end": far, "path": path,
+                        "cables": [h for h in path["hops"] if h["type"] == "cable"]})
+        return out
+
+    HUB_LINKS = 16   # a device with more cabled ports than this ends a branch (KVM, frames, routers)
+
+    def signal_chain(self, start, cv_events=None, max_depth=6, max_links=150):
+        """Follow every cable from a device through panels AND through devices, breadth first,
+        until the chain ends. Switches end a branch (going through them would pull in the whole
+        network) - their port is a leaf with its port card. Every link gets its faults.
+        Returns {root, links: [... in display order ...], faults: [...], truncated}"""
+        root = self.device_of(start) or start
+        links, seen_dev, seen_cable = [], {norm_name(root)}, set()
+        truncated = False
+
+        def walk(dev, depth, parent_idx):
+            nonlocal truncated
+            if depth > max_depth:
+                truncated = True
+                return
+            for l in self.device_links(dev):
+                ids = tuple(sorted(h.get("id", "") + str(h.get("date", "")) for h in l["cables"]))
+                if ids in seen_cable:
+                    continue          # the link back to where we came from
+                seen_cable.add(ids)
+                if len(links) >= max_links:
+                    truncated = True
+                    return
+                to = l["to"]
+                sw = bool(to) and self.is_switch(to)
+                again = bool(to) and norm_name(to) in seen_dev
+                hub = bool(to) and not sw and not again and \
+                    len(self.cabling.by_top.get(norm_name(to), [])) > self.HUB_LINKS
+                link = {"depth": depth, "parent": parent_idx, "from": dev, "from_port": l["from_port"], "to": to,
+                        "to_port": l["to_port"], "to_name": (l["to_end"] or {}).get("name", ""), "status": l["path"]["status"],
+                        "cables": [{"id": h.get("id", ""), "template": h.get("template", ""), "length": h.get("length", ""),
+                                    "flags": h.get("flags", []), "trunk": bool(h.get("trunk"))} for h in l["cables"]],
+                        "hops": l["path"]["hops"], "is_switch": sw, "again": again, "hub": hub,
+                        "hub_links": len(self.cabling.by_top.get(norm_name(to), [])) if hub else 0,
+                        "switch_link": self._switch_ref(l["to_end"]) if sw else None,
+                        "future": bool(to) and bool(self.future_of(to))}
+                link["faults"] = self._link_faults(link, cv_events)
+                links.append(link)
+                idx = len(links) - 1
+                if to and not sw and not again and not hub:
+                    seen_dev.add(norm_name(to))
+                    walk(to, depth + 1, idx)
+                elif hub:
+                    seen_dev.add(norm_name(to))
+
+        if self.is_switch(root):
+            # a switch as start: one level only (its ports)
+            for l in self.device_links(root):
+                link = {"depth": 1, "parent": None, "from": root, "from_port": l["from_port"], "to": l["to"],
+                        "to_port": l["to_port"], "to_name": (l["to_end"] or {}).get("name", ""), "status": l["path"]["status"],
+                        "cables": [{"id": h.get("id", ""), "template": h.get("template", ""), "length": h.get("length", ""),
+                                    "flags": h.get("flags", []), "trunk": bool(h.get("trunk"))} for h in l["cables"]],
+                        "hops": l["path"]["hops"], "is_switch": False, "again": False, "hub": False, "hub_links": 0,
+                        "switch_link": self._switch_ref({"top": root, "parent": "", "port": l["from_port"]}),
+                        "future": bool(l["to"]) and bool(self.future_of(l["to"]))}
+                link["faults"] = self._link_faults(link, cv_events)
+                links.append(link)
+        else:
+            walk(root, 1, None)
+        faults = []
+        for i, l in enumerate(links):
+            for sev, text in l["faults"]:
+                faults.append({"link": i, "severity": sev, "fault": text, "from": l["from"], "from_port": l["from_port"],
+                               "to": l["to"] or l["to_name"], "to_port": l["to_port"], "depth": l["depth"],
+                               "cables": " + ".join(c["id"] or "?" for c in l["cables"])})
+        order = {"error": 0, "warning": 1, "info": 2}
+        faults.sort(key=lambda f: (order.get(f["severity"], 3), f["depth"], f["link"]))
+        return {"root": root, "links": links, "faults": faults, "truncated": truncated,
+                "devices": len({norm_name(l["to"]) for l in links if l["to"]}) + 1}
+
+    def _link_faults(self, link, cv_events=None):
+        """[(severity, text)] for one link of the chain."""
+        out = []
+        for c in link["cables"]:
+            if "to be checked" in c["flags"]:
+                out.append(("warning", "Cable %s is marked 'to be checked' in Patchmanager" % (c["id"] or "?")))
+        if link["status"] == "open":
+            out.append(("warning", "Patchmanager path ends at %s - nothing patched beyond it" % (link["to_name"] or "?")))
+        elif link["status"] in ("ambiguous", "loop"):
+            out.append(("warning", "Patchmanager path is %s at %s" % (link["status"], link["to_name"] or "?")))
+        if any(c["trunk"] for c in link["cables"]):
+            out.append(("info", "Path crosses a trunk - far port number assumed"))
+        # defect ports on either device (Patchmanager)
+        if self.equipment:
+            for dev, port in ((link["from"], link["from_port"]), (link["to"], link["to_port"])):
+                e = self.equipment.get(dev) if dev else None
+                last = norm_port(str(port).split("/")[-1]) if port else ""
+                if e and last and last in e["defect"]:
+                    out.append(("error", "Port %s of %s is marked DEFECT in Patchmanager" % (port, dev)))
+        # the switch end: snags, CloudVision, documentation
+        ref = link.get("switch_link")
+        if ref:
+            pc = self.port_card(ref["switch"], ref["nums"], cv_events, with_shut=False)
+            for snag in pc["snags"]:
+                if snag["open"]:
+                    out.append(("error", "Open snag #%s on %s %s: %s (%s)" % (
+                        snag.get("nr", ""), pc["switch"], pc["intf"],
+                        snag.get("error") or snag.get("error_type") or snag.get("comment") or snag.get("destination") or "no description",
+                        snag.get("status") or "open")))
+            for e in pc["events"]:
+                if e.get("open"):
+                    out.append(("error", "CloudVision on %s %s: %s" % (pc["switch"], pc["intf"], e.get("title"))))
+            for r in pc["compare"]:
+                if r["verdict"] == "device":
+                    out.append(("error", "Documentation mismatch on %s %s: %s says %s" % (pc["switch"], pc["intf"], r["source"], r["device"])))
+                elif r["verdict"] == "port":
+                    out.append(("warning", "Documentation mismatch on %s %s: %s says port %s" % (pc["switch"], pc["intf"], r["source"], r["port"])))
+            if len([r for r in pc["compare"] if r["source"] == "Patchmanager cabling"]) > 1:
+                out.append(("error", "Two cables documented on %s %s" % (pc["switch"], pc["intf"])))
+        if link.get("future"):
+            out.append(("info", "%s is marked future use" % link["to"]))
+        return out
+
     def mismatches(self):
         """Every switch port (port plan + documented cabling + snags) where the sources disagree.
         Rows: {switch, cv_switch, intf, nums, severity, kind, source, says, reference, ref_says, detail}"""
@@ -1221,6 +1357,20 @@ class Store:
     def status(self):
         return {"meta": self.meta, "switches": len(self.switches()), "mapping": len(self.mapping),
                 "mapping_dups": self.mapping_dups}
+
+
+def end_port(end):
+    """Readable port of a cable end: 'LC03 / 1', 'UIC 1 / MGMT', 'ETH'."""
+    if not end:
+        return ""
+    top = end.get("top", "")
+    parts = [end.get("parent") if end.get("parent") not in ("", None, top) else "",
+             end.get("label") if end.get("label") not in ("", None, top) else "", end.get("port", "")]
+    out = []
+    for p in parts:
+        if p and (not out or norm_name(out[-1]) != norm_name(p)):
+            out.append(p)
+    return " / ".join(out)
 
 
 def eos_shutdown(rows):

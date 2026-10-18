@@ -89,6 +89,22 @@
   .hidden { display: none !important; }
   pre.raw { white-space: pre-wrap; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 0.75rem; }
   td input { width: 100%; padding: 3px 6px; font-size: 0.85rem; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(820px, 100%); background: var(--bg); border-left: 1px solid var(--line);
+            box-shadow: -8px 0 24px rgba(0,0,0,.18); z-index: 40; overflow-y: auto; padding: 0 16px 40px; transform: translateX(100%); transition: transform .18s; }
+  .drawer.open { transform: none; }
+  .drawer .dhead { position: sticky; top: 0; background: var(--bg); padding: 10px 0; display: flex; justify-content: space-between; align-items: center; z-index: 1; border-bottom: 1px solid var(--line); }
+  .drawer .card { margin-top: 12px; }
+  th.sort::after { content: " ↕"; opacity: .35; } th.sort.asc::after { content: " ▲"; opacity: 1; } th.sort.desc::after { content: " ▼"; opacity: 1; }
+  th.sort.asc, th.sort.desc { color: var(--text); }
+  .fsum { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.85rem; margin: -2px 0 10px; color: var(--muted); }
+  .fsum b { color: var(--text); } .fsum .btn { padding: 1px 9px; font-size: 0.78rem; }
+  tr.sel td { background: var(--infobg) !important; box-shadow: inset 3px 0 0 var(--accent); }
+  .chain { list-style: none; margin: 0; padding: 0; }
+  .chain li { padding: 6px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
+  .chain li.bad { background: var(--badbg); } .chain li.warn { background: var(--warnbg); }
+  .chain .ind { flex: none; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre; }
+  .chain .body { flex: 1; min-width: 0; } .chain .cabs { font-size: 0.78rem; color: var(--muted); }
+  .chain .fl { font-size: 0.8rem; margin-top: 2px; } .chain .fl.error { color: var(--bad); font-weight: 600; } .chain .fl.warning { color: var(--warn); } .chain .fl.info { color: var(--muted); }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; z-index: 60; }
   @media print { nav, .searchbar, .hint, .results, .cardhead .tools, header .muted { display: none !important; } body { background: #fff; } .card { border: 0; } }
 </style>
@@ -125,6 +141,7 @@
       <a class="btn" href="/export/worklist.csv">Download CSV</a>
     </div>
     <div class="chips" id="wchips"></div>
+    <div class="fsum" id="wsum"></div>
     <div class="tablewrap"><table id="wtable">
       <thead><tr><th class="sort" data-k="switch">Switch</th><th class="sort" data-k="intf">Port</th><th class="sort" data-k="what">Problem</th>
         <th class="sort" data-k="destination">Destination</th><th class="sort" data-k="status">Status</th><th class="sort" data-k="since">Since</th><th>Who / Jira</th></tr></thead>
@@ -139,6 +156,7 @@
       <a class="btn" href="/export/mismatches.csv">Download CSV</a>
     </div>
     <div class="chips" id="mchips"></div>
+    <div class="fsum" id="msum"></div>
     <div class="tablewrap"><table id="mtable">
       <thead><tr><th>Switch port</th><th>Mismatch</th><th>Source says</th><th>Compared with</th><th>Detail</th></tr></thead>
       <tbody></tbody></table></div>
@@ -179,6 +197,10 @@
     </div>
   </section>
 </main>
+<aside class="drawer" id="drawer" aria-label="Details">
+  <div class="dhead"><span class="muted" id="dtitle">Details</span><span><button class="btn sm" id="dfull" title="Open on the Troubleshoot tab">Open full page</button> <button class="btn sm" id="dclose" title="Close (Esc)">✕ Close</button></span></div>
+  <div id="drawerbody"></div>
+</aside>
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
@@ -190,21 +212,52 @@ const store = { get(k, d) { try { return JSON.parse(localStorage.getItem("pt." +
 let STATUS = null, WORK = [], CURRENT = null;
 
 // ------------------------------------------------------------- tabs / routing
+// Port / device / cable / chain views open on the Troubleshoot tab - or, when you are in a
+// list (Worklist, Mismatches, To shut, ...), in a side panel so the list keeps its place.
+let CURTAB = "port", DETAIL = "";
+const LIST_TABS = ["work", "mis", "shut", "switches", "data"];
+function out() {
+  if (CURTAB === "port") return $("#card");
+  $("#drawer").classList.add("open");
+  return $("#drawerbody");
+}
+function closeDrawer() {
+  $("#drawer").classList.remove("open"); DETAIL = "";
+  document.querySelectorAll("tr.sel").forEach(t => t.classList.remove("sel"));
+  history.replaceState(null, "", "#" + CURTAB);
+}
+function setHash(h) {           // remember the view in the URL (back / reload / share)
+  DETAIL = h;
+  const full = CURTAB === "port" ? h : CURTAB + "/" + h;
+  if (decodeURIComponent(location.hash.slice(1)) !== full) history.pushState(null, "", "#" + full);
+}
+$("#dclose").onclick = closeDrawer;
+$("#dfull").onclick = () => { const h = DETAIL; closeDrawer(); showTab("port"); location.hash = h; };
+document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#drawer").classList.contains("open")) closeDrawer(); });
 function showTab(t) {
+  CURTAB = t;
+  if (t === "port") $("#drawer").classList.remove("open");
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + t));
   if (t === "work") loadWork(); if (t === "mis") loadMis(); if (t === "shut") loadShut(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
 }
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => { showTab(b.dataset.tab); history.replaceState(null, "", "#" + b.dataset.tab); });
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  $("#drawer").classList.remove("open"); showTab(b.dataset.tab); history.replaceState(null, "", "#" + b.dataset.tab); });
 function route() {
-  const h = decodeURIComponent(location.hash.slice(1));
-  const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/), d = h.match(/^device=(.+)$/);
-  if (m) { showTab("port"); openPort(m[1], m[2], false); }
-  else if (d) { showTab("port"); openDevice(d[1], false); }
-  else if (c) { showTab("port"); openCable(+c[1], c[2], false); }
-  else if (["work", "mis", "shut", "switches", "data"].includes(h)) showTab(h);
+  let h = decodeURIComponent(location.hash.slice(1));
+  // 'work/port=...' = list tab + side panel;  plain 'port=...' clicked inside a panel keeps the list tab
+  const pre = h.match(/^(\w+)\/(.*)$/);
+  if (pre && LIST_TABS.includes(pre[1])) { if (CURTAB !== pre[1]) showTab(pre[1]); h = pre[2]; }
+  const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/), d = h.match(/^device=(.+)$/), ch = h.match(/^chain=(.+)$/);
+  if (m) openPort(m[1], m[2]);
+  else if (d) openDevice(d[1]);
+  else if (c) openCable(+c[1], c[2]);
+  else if (ch) openChain(ch[1]);
+  else if (LIST_TABS.includes(h)) { $("#drawer").classList.remove("open"); if (CURTAB !== h) showTab(h); }
+  else if (!h) showTab("port");
 }
 window.addEventListener("hashchange", route);
+window.addEventListener("popstate", route);
 
 // ------------------------------------------------------------- status
 async function loadStatus() {
@@ -231,11 +284,11 @@ $("#searchform").onsubmit = async e => {
 function pick(r) { r.kind === "port" ? openPort(r.switch, intf(r.nums)) : r.kind === "cable" ? openCable(r.cable, r.side) : openDevice(r.device); }
 
 // ------------------------------------------------------------- port card
-async function openPort(sw, i, push = true) {
-  if (push) location.hash = "port=" + encodeURIComponent(sw) + "|" + encodeURIComponent(i);
-  $("#card").innerHTML = '<div class="card muted">loading…</div>';
+async function openPort(sw, i) {
+  setHash("port=" + sw + "|" + i); $("#dtitle").textContent = sw + " " + i;
+  const box = out(); box.innerHTML = '<div class="card muted">loading…</div>';
   try { CURRENT = await api(`/api/port?switch=${encodeURIComponent(sw)}&intf=${encodeURIComponent(i)}`); }
-  catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   renderPort(CURRENT);
 }
 function stepPort(d) {
@@ -249,7 +302,8 @@ function renderPort(c) {
      <td>${esc(s.action)}${s.fixed ? '<br><span class="muted">' + esc(s.fixed) + '</span>' : ""}</td><td>${esc(s.who)}${s.jira ? "<br>" + esc(s.jira) : ""}</td></tr>`).join("");
   const cvOn = STATUS && STATUS.cv.enabled;
   const ev = c.events.map(e => `<tr><td class="mono">${esc((e.time || "").replace("T", " ").slice(0, 19))}</td><td>${esc(e.severity)}</td><td>${esc(e.title)}<br><span class="muted">${esc(e.description)}</span></td><td>${e.open ? '<span class="tag bad">open</span>' : '<span class="tag">closed</span>'}</td></tr>`).join("");
-  $("#card").innerHTML = `<div class="card">
+  const box = out();
+  box.innerHTML = `<div class="card">
     <div class="cardhead">
       <div><h3>${esc(c.switch)} · ${esc(c.intf)}</h3>
         <div class="muted">CloudVision: <span class="mono">${esc(c.cv_switch || "–")} ${esc(c.intf)}</span>${eq ? " · " + esc(eq.template) + " · " + esc(eq.location) + (eq.position ? " · " + esc(eq.position) : "") : ""}</div></div>
@@ -270,9 +324,9 @@ function renderPort(c) {
     <h2>Snagging list <span class="muted">(${c.snags.length})</span></h2>
     ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>First seen</th><th>Problem</th><th>Status</th><th>Done</th><th>Who</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries for this port.</p>'}
   </div>`;
-  $("#prev").onclick = () => stepPort(-1); $("#next").onclick = () => stepPort(1);
-  $("#copy").onclick = () => copy(jobCard(c), "Job card copied");
-  $("#link").onclick = () => copy(location.href, "Link copied");
+  box.querySelector("#prev").onclick = () => stepPort(-1); box.querySelector("#next").onclick = () => stepPort(1);
+  box.querySelector("#copy").onclick = () => copy(jobCard(c), "Job card copied");
+  box.querySelector("#link").onclick = () => copy(shareLink("port=" + c.switch + "|" + c.intf), "Link copied");
 }
 const VERDICT = { ref: '<span class="tag">reference</span>', ok: '<span class="tag ok">same</span>', device: '<span class="tag bad">other device</span>',
   port: '<span class="tag warn">other port</span>', trunk: '<span class="tag warn">differs – trunk assumed</span>', unknown: '<span class="tag">cabling ends at panel</span>',
@@ -312,16 +366,17 @@ function jobCard(c) {
   L.push("", location.origin + "/#port=" + encodeURIComponent(c.switch) + "|" + encodeURIComponent(c.intf));
   return L.join("\n");
 }
+const shareLink = h => location.origin + "/#" + encodeURIComponent(h).replace(/%3D/g, "=").replace(/%7C/g, "|");
 async function copy(text, msg) {
   try { await navigator.clipboard.writeText(text); toast(msg); }
   catch { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast(msg); }
 }
 
 // ------------------------------------------------------------- device card
-async function openDevice(name, push = true) {
-  if (push) location.hash = "device=" + encodeURIComponent(name);
-  $("#card").innerHTML = '<div class="card muted">loading…</div>';
-  let d; try { d = await api("/api/device?name=" + encodeURIComponent(name)); } catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+async function openDevice(name) {
+  setHash("device=" + name); $("#dtitle").textContent = name;
+  const box = out(); box.innerHTML = '<div class="card muted">loading…</div>';
+  let d; try { d = await api("/api/device?name=" + encodeURIComponent(name)); } catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   const e = d.equipment, portLink = l => l ? `<a class="lnk" href="#port=${encodeURIComponent(l.switch)}|${encodeURIComponent(intf(l.nums))}">${esc(l.switch)} ${esc(intf(l.nums))} ›</a>` : "";
   const st = { complete: '<span class="tag ok">complete</span>', open: '<span class="tag warn">open</span>', ambiguous: '<span class="tag warn">ambiguous</span>', loop: '<span class="tag bad">loop</span>' };
   const conns = d.connections.map((c, i) => `<tr><td><b>${esc(c.port || "–")}</b></td>
@@ -331,13 +386,14 @@ async function openDevice(name, push = true) {
   const plan = d.plan.map(p => `<tr><td>${portLink({ switch: p.switch, nums: p.nums })}</td><td>${esc(p.device)}</td><td>${esc(p.vlan)}</td><td class="muted">${esc(p.sheet)} r${p.row}</td></tr>`).join("");
   const snags = d.snags.map(s => `<tr><td>${esc(s.nr)}</td><td>${s.nums.length ? portLink({ switch: s.pm_switch || s.cv_switch, nums: s.nums }) : esc(s.cv_port)}</td><td>${esc(s.error || s.error_type)}</td>
       <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td><td>${esc(s.first)}</td></tr>`).join("");
-  $("#card").innerHTML = `<div class="card">
+  box.innerHTML = `<div class="card">
     ${d.future ? `<ul class="checks"><li class="bad">FUTURE USE (${esc(d.future.source)}${d.future.note ? ": " + esc(d.future.note) : ""}) – its switch ports should be shut. See “To shut”.</li></ul>` : ""}
     <div class="cardhead"><div><h3>${esc(d.device)}${d.is_switch ? ' <span class="tag">switch</span>' : ""}${d.future ? ' <span class="tag bad">future use</span>' : ""}</h3>
       <div class="muted">${e ? [e.template, e.location, e.position].filter(Boolean).map(esc).join(" · ") : "not in the Patchmanager equipment export"}${d.cv_switch ? ' · CloudVision <span class="mono">' + esc(d.cv_switch) + "</span>" : ""}</div>
       <div class="names">${d.names.map(([n, via]) => `<span title="${esc(via)}">${esc(n)} <span class="muted">· ${esc(via)}</span></span>`).join("")}</div></div>
       <div class="tools">${d.is_switch ? "" : d.future && d.future.source !== "marked here" ? "" :
         `<button class="btn sm ${d.future ? "" : "warn"}" id="futbtn">${d.future ? "Clear future use" : "Mark as future use"}</button>`}
+        <a class="btn sm primary" href="#chain=${encodeURIComponent(d.device)}">Signal chain</a>
         <button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div></div>
     ${d.compare && d.compare.length ? `<h2>Port plan vs. cabling <span class="muted">(${d.compare.filter(r => r.verdict !== "ok").length} differences)</span></h2>
       <div class="tablewrap"><table><thead><tr><th>Device port</th><th>Port plan says</th><th>Patchmanager cabling</th><th></th></tr></thead><tbody>${d.compare.map(r => `<tr class="v-${r.verdict.replace(/ /g, "")}">
@@ -350,15 +406,49 @@ async function openDevice(name, push = true) {
     <h2>Snagging list <span class="muted">(${d.snags.length})</span></h2>
     ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
   </div>`;
-  $("#link").onclick = () => copy(location.href, "Link copied");
-  const fb = $("#futbtn");
+  box.querySelector("#link").onclick = () => copy(shareLink("device=" + d.device), "Link copied");
+  const fb = box.querySelector("#futbtn");
   if (fb) fb.onclick = async () => {
     let note = "";
     if (!d.future) { note = prompt(`Mark ${d.device} as FUTURE USE?\nIts switch ports will be listed as "should be shut".\n\nOptional note (e.g. "phase 2", ticket):`, ""); if (note === null) return; }
     else if (!confirm(`Clear future use for ${d.device}?`)) return;
-    try { await api("/api/future", { method: "POST", body: JSON.stringify({ device: d.device, future: !d.future, note }) }); toast(d.future ? "Future use cleared" : "Marked as future use"); openDevice(d.device, false); loadShutCount(); }
+    try { await api("/api/future", { method: "POST", body: JSON.stringify({ device: d.device, future: !d.future, note }) }); toast(d.future ? "Future use cleared" : "Marked as future use"); openDevice(d.device); loadShutCount(); if (CURTAB === "shut") loadShut(); }
     catch (e) { toast(e.message); }
   };
+}
+
+// ------------------------------------------------------------- signal chain
+const SEVTAG = { error: '<span class="sev error">error</span>', warning: '<span class="sev warning">warning</span>', info: '<span class="sev info">info</span>' };
+async function openChain(name) {
+  setHash("chain=" + name); $("#dtitle").textContent = "Signal chain " + name;
+  const box = out(); box.innerHTML = '<div class="card muted">following every cable…</div>';
+  let ch; try { ch = await api("/api/chain?device=" + encodeURIComponent(name)); } catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const errs = ch.faults.filter(f => f.severity === "error").length, warns = ch.faults.filter(f => f.severity === "warning").length;
+  const devLink = (n, label) => n ? `<a class="dev" href="#device=${encodeURIComponent(n)}">${esc(label || n)}</a>` : esc(label || "");
+  const portLink = l => l ? `<a class="lnk" href="#port=${encodeURIComponent(l.switch)}|${encodeURIComponent(intf(l.nums))}">${esc(l.switch)} ${esc(intf(l.nums))} ›</a>` : "";
+  const faults = ch.faults.map(f => `<tr class="click" data-l="${f.link}"><td>${SEVTAG[f.severity] || esc(f.severity)}</td><td>${esc(f.fault)}</td>
+      <td>${esc(f.from)} <span class="muted">${esc(f.from_port)}</span> → ${esc(f.to)} <span class="muted">${esc(f.to_port)}</span></td><td class="mono">${esc(f.cables)}</td></tr>`).join("");
+  const rows = ch.links.map((l, i) => {
+    const worst = l.faults.some(f => f[0] === "error") ? "bad" : l.faults.some(f => f[0] === "warning") ? "warn" : "";
+    const tags = [l.is_switch ? '<span class="tag">switch – chain ends</span>' : "", l.hub ? `<span class="tag" title="${l.hub_links} cabled ports – open it to follow further">hub – not followed</span>` : "",
+      l.again ? '<span class="tag">already in chain</span>' : "", l.future ? '<span class="tag bad">future use</span>' : ""].join(" ");
+    return `<li class="${worst}" id="lk${i}"><span class="ind">${"   ".repeat(l.depth - 1)}└─</span><div class="body">
+      <span class="muted">${esc(l.from_port || "?")}</span> → ${l.to ? devLink(l.to) : '<span class="muted">' + esc(l.to_name || "not connected") + "</span>"}
+      <span class="muted">${esc(l.to_port)}</span> ${tags} ${portLink(l.switch_link)}
+      <div class="cabs">${l.cables.map(c => `<span class="mono">${esc(c.id || "?")}</span> ${esc(c.template)}${c.length ? " " + esc(c.length) : ""}`).join(" · ")}</div>
+      ${l.faults.map(f => `<div class="fl ${f[0]}">${f[0] === "error" ? "✖" : f[0] === "warning" ? "⚠" : "ℹ"} ${esc(f[1])}</div>`).join("")}
+      <details class="trace"><summary>path</summary>${renderPath({ hops: l.hops, status: l.status })}</details></div></li>`;
+  }).join("");
+  box.innerHTML = `<div class="card">
+    <div class="cardhead"><div><h3>Signal chain · ${devLink(ch.root)}</h3>
+      <div class="muted">${ch.links.length} links · ${ch.devices} devices · <b class="${errs ? "err" : ""}">${errs} errors</b> · ${warns} warnings${ch.truncated ? " · <b>cut off</b> (very long chain – open a device further down to continue)" : ""}</div>
+      <div class="muted">Follows every cable through patch panels and through devices. Switches and hubs (devices with many ports, e.g. KVM, frames) end a branch – open them to go on.</div></div>
+      <div class="tools"><a class="btn sm" href="/export/chain.csv?device=${encodeURIComponent(ch.root)}">Download CSV</a><button class="btn sm" id="clink">Copy link</button><button class="btn sm" onclick="print()">Print</button></div></div>
+    <h2>Faults on this chain <span class="muted">(${ch.faults.length})</span></h2>
+    ${faults ? `<div class="tablewrap"><table><thead><tr><th>Severity</th><th>Fault</th><th>Link</th><th>Cables</th></tr></thead><tbody>${faults}</tbody></table></div>` : '<p class="empty okt">No faults found on this chain.</p>'}
+    <h2>Chain</h2><ul class="chain">${rows || '<li class="empty">No cables on this device.</li>'}</ul></div>`;
+  box.querySelector("#clink").onclick = () => copy(shareLink("chain=" + ch.root), "Link copied");
+  box.querySelectorAll("tr[data-l]").forEach(tr => tr.onclick = () => { const li = box.querySelector("#lk" + tr.dataset.l); li.scrollIntoView({ behavior: "smooth", block: "center" }); li.animate([{ outline: "2px solid var(--accent)" }, { outline: "2px solid transparent" }], 1600); });
 }
 
 // ------------------------------------------------------------- ports to shut
@@ -380,14 +470,15 @@ async function loadShut() {
 $("#copyeos").onclick = () => SHUT && copy(SHUT.eos, "EOS config copied");
 
 // ------------------------------------------------------------- cable card
-async function openCable(idx, side, push = true) {
-  if (push) location.hash = "cable=" + idx + (side ? "|" + side : "");
+async function openCable(idx, side) {
+  setHash("cable=" + idx + (side ? "|" + side : "")); $("#dtitle").textContent = "Cable";
+  const box = out();
   try {
     const c = await api(`/api/cable?idx=${idx}${side ? "&side=" + side : ""}`);
-    $("#card").innerHTML = `<div class="card"><div class="cardhead"><div><h3>Cable ${esc(c.cable.id)}</h3>
+    box.innerHTML = `<div class="card"><div class="cardhead"><div><h3>Cable ${esc(c.cable.id)}</h3>
       <div class="muted">${esc(c.cable.template)}${c.cable.length ? " · " + esc(c.cable.length) : ""} · ${esc(c.cable.stamp)}</div></div></div>
       <div class="cols"><div><h2>${esc(c.a.name)} → far end</h2>${renderPath(c.paths[0])}</div>${c.paths[1] ? `<div><h2>${esc(c.b.name)} → far end</h2>${renderPath(c.paths[1])}</div>` : ""}</div></div>`;
-  } catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+  } catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 
 // ------------------------------------------------------------- worklist
@@ -409,10 +500,22 @@ function renderWork() {
     <td class="mono">${esc(w.intf)}</td><td>${esc(w.what)} <span class="src ${w.source}">${w.source === "snag" ? "#" + esc(w.nr) : "CV"}</span></td>
     <td>${esc(w.destination)}</td><td>${esc(w.status)}${w.future ? '<br><span class="tag bad" title="' + esc(w.future) + ' is marked future use">future – shut port</span>' : ""}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + esc(w.jira) : ""}</td></tr>`).join("")
     || `<tr><td colspan="7" class="empty">Nothing open${WORK.length ? " for this filter" : " – import the snagging list or configure CloudVision"}.</td></tr>`;
-  $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const w = WORK[+tr.dataset.i]; if (w.nums.length) { showTab("port"); openPort(w.switch, intf(w.nums)); } else toast("No interface in this entry"); });
-  $("#wfoot").textContent = `${rows.length} of ${WORK.length} shown. Open = snagging list status not fixed / closed / duplicate / ignore, plus CloudVision interface events not yet in the list.`;
+  $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const w = WORK[+tr.dataset.i];
+    if (!w.nums.length) return toast("No interface in this entry");
+    selectRow(tr); openPort(w.switch, intf(w.nums)); });
+  document.querySelectorAll("#wtable th.sort").forEach(th => { th.classList.toggle("asc", th.dataset.k === wsort.k && wsort.d > 0); th.classList.toggle("desc", th.dataset.k === wsort.k && wsort.d < 0); });
+  const active = [wstatus && "status <b>" + esc(wstatus) + "</b>", src && "source <b>" + esc($("#wsrc").selectedOptions[0].text) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
+  const sortName = document.querySelector(`#wtable th[data-k="${wsort.k}"]`)?.textContent || wsort.k;
+  $("#wsum").innerHTML = `Showing <b>${rows.length}</b> of ${WORK.length}${active.length ? " · filtered by " + active.join(", ") : " · no filter"} · sorted by <b>${esc(sortName)}</b> ${wsort.d > 0 ? "ascending" : "descending"}
+    ${active.length ? '<button class="btn" id="wclear">Clear filters</button>' : ""}`;
+  const wc = $("#wclear"); if (wc) wc.onclick = () => { wstatus = ""; store.set("wstatus", ""); $("#wq").value = ""; $("#wsrc").value = ""; store.set("wq", ""); renderWork(); };
+  $("#wfoot").textContent = "Open = snagging list status not fixed / closed / duplicate / ignore, plus CloudVision interface events not yet in the list. Click a row: details open on the right, the list stays.";
+  reselect("#wtable");
 }
-$("#wq").oninput = renderWork; $("#wsrc").onchange = renderWork;
+$("#wq").value = store.get("wq", ""); $("#wsrc").value = store.get("wsrc", "");
+$("#wq").oninput = () => { store.set("wq", $("#wq").value); renderWork(); }; $("#wsrc").onchange = () => { store.set("wsrc", $("#wsrc").value); renderWork(); };
+function selectRow(tr) { const t = tr.closest("table"); t.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel"); t.dataset.sel = tr.dataset.i; }
+function reselect(sel) { const t = $(sel), i = t.dataset.sel; if (i !== undefined && $("#drawer").classList.contains("open")) t.querySelector(`tr[data-i="${i}"]`)?.classList.add("sel"); }
 document.querySelectorAll("#wtable th.sort").forEach(th => th.onclick = () => { wsort = { k: th.dataset.k, d: wsort.k === th.dataset.k ? -wsort.d : 1 }; store.set("wsort", wsort); renderWork(); });
 
 // ------------------------------------------------------------- mismatches
@@ -435,8 +538,14 @@ function renderMis() {
     <td><b>${esc(m.switch)}</b> <span class="mono">${esc(m.intf)}</span><br><span class="muted mono">${esc(m.cv_switch)}</span></td>
     <td><span class="sev ${m.severity}">${esc(m.kind)}</span></td><td>${esc(m.source)}:<br><b>${esc(m.says)}</b></td>
     <td>${esc(m.reference)}:<br>${esc(m.ref_says)}</td><td class="muted">${esc(m.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
-  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; showTab("port"); openPort(m.switch, intf(m.nums)); });
-  $("#mfoot").textContent = `${rows.length} of ${MIS.length} shown${rows.length > 1500 ? " (first 1500 listed – use the filter or Download CSV)" : ""}.`;
+  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; selectRow(tr); openPort(m.switch, intf(m.nums)); });
+  const sevs2 = { error: "errors", warning: "warnings", check: "check on site", info: "info" };
+  const act = [msev && "severity <b>" + esc(sevs2[msev] || msev) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
+  $("#msum").innerHTML = `Showing <b>${rows.length}</b> of ${MIS.length}${act.length ? " · filtered by " + act.join(", ") : " · no filter"} · sorted by switch and port
+    ${act.length ? '<button class="btn" id="mclear">Clear filters</button>' : ""}`;
+  const mc = $("#mclear"); if (mc) mc.onclick = () => { msev = ""; store.set("msev", ""); $("#mq").value = ""; renderMis(); };
+  $("#mfoot").textContent = rows.length > 1500 ? "First 1500 listed – narrow the filter or use Download CSV." : "Click a row: details open on the right, the list stays.";
+  reselect("#mtable");
 }
 $("#mq").oninput = () => MIS && renderMis();
 
@@ -498,7 +607,7 @@ $("#locform").onsubmit = async e => {
   $("#locres").innerHTML = '<p class="muted">asking CloudVision…</p>';
   try { const { hits } = await api("/api/cv/locate?q=" + encodeURIComponent(q));
     $("#locres").innerHTML = hits.length ? `<table><thead><tr><th>Switch</th><th>Interface</th><th>MAC</th><th>IP</th></tr></thead><tbody>${hits.map((h, i) => `<tr class="click" data-i="${i}"><td>${esc(h.switch)}</td><td class="mono">${esc(h.interface)}</td><td class="mono">${esc(h.mac)}</td><td class="mono">${esc(h.ip)}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">Not found.</p>';
-    $("#locres").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const h = hits[+tr.dataset.i]; showTab("port"); openPort(h.switch, h.interface); });
+    $("#locres").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const h = hits[+tr.dataset.i]; selectRow(tr); openPort(h.switch, h.interface); });
   } catch (err) { $("#locres").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
 };
 

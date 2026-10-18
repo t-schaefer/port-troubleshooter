@@ -24,6 +24,16 @@ everything that is still open.
   CSV dump:         "Download CSV" on Worklist and Mismatches (Excel-ready, UTF-8):
                     /export/worklist.csv, /export/mismatches.csv
 
+  Signal chain:     "Signal chain" on a device card: follows every cable through panels AND
+                    through devices, shown as one tree. Switches and hubs (devices with more
+                    than 16 cabled ports - KVM, frames, servers) end a branch; open them to go
+                    on. Every link is checked for faults: open snag, open CloudVision event,
+                    Patchmanager 'to be checked' / DEFECT port, documentation mismatch, two
+                    cables on one port, path ending at a panel. Fault list + CSV download.
+  Lists:            clicking a row in Worklist / Mismatches / To shut opens the details in a
+                    side panel - the list keeps its filter, sort and position (Esc closes).
+                    Filters and sort are remembered in the browser and shown above the table.
+
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
                     Its switch ports (via cabling AND port plan) are listed under "To shut",
