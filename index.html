@@ -288,7 +288,7 @@ let STATUS = null, WORK = [], CURRENT = null;
 // ------------------------------------------------------------- tabs / routing
 // Port / device / cable / chain views open on the Search tab - or, when you are in a
 // list (Worklist, Mismatches, To shut, ...), in a side panel so the list keeps its place.
-let CURTAB = "ports", DETAIL = "";   // start page: Ports
+let CURTAB = "", DETAIL = "";   // set by the first showTab (start page: Ports)
 const LIST_TABS = ["work", "mis", "ports", "devs", "shut", "switches", "data"];
 function out() {
   if (CURTAB === "port") return $("#card");
@@ -329,6 +329,7 @@ function route() {
   // 'work/port=...' = list tab + side panel;  plain 'port=...' clicked inside a panel keeps the list tab
   const pre = h.match(/^(\w+)\/(.*)$/);
   if (pre && LIST_TABS.includes(pre[1])) { if (CURTAB !== pre[1]) showTab(pre[1]); h = pre[2]; }
+  else if (!CURTAB && !LIST_TABS.includes(h) && h !== "port") showTab("ports");   // first load with a shared link
   const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/), d = h.match(/^device=(.+)$/), ch = h.match(/^chain=(.+)$/);
   if (m) openPort(m[1], m[2]);
   else if (d) openDevice(d[1]);
@@ -337,8 +338,7 @@ function route() {
   else if (LIST_TABS.includes(h)) { $("#drawer").classList.remove("open"); if (CURTAB !== h) showTab(h); }
   else if (!h) showTab("ports");
 }
-window.addEventListener("hashchange", route);
-window.addEventListener("popstate", route);
+window.addEventListener("hashchange", route);   // (popstate as well made every link click load twice)
 
 // ------------------------------------------------------------- status
 async function loadStatus() {
@@ -801,7 +801,10 @@ document.querySelectorAll("#wtable th.sort").forEach(th => th.onclick = () => { 
 
 // ------------------------------------------------------------- ports overview
 let PORTS = null, pstat = store.get("pstat", ""), pgroup = store.get("pgroup", "switch");
-const devA = n => n ? `<a class="dev" href="#device=${encodeURIComponent(n)}" onclick="event.stopPropagation()">${esc(n)}</a>` : "";
+const devA = n => n ? `<a class="dev" href="#device=${encodeURIComponent(n)}">${esc(n)}</a>` : "";   // row clicks ignore links
+const PAGE = 200;     // rows drawn at a time - 4,000+ rows at once make Safari slow / crash
+let pLimit = PAGE;
+const debounce = (f, ms = 250) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; };
 async function loadPorts() {
   $("#pgroup").value = pgroup;
   if (!PORTS) $("#pfoot").textContent = "reading all ports…";
@@ -813,7 +816,7 @@ function renderPorts() {
   PORTS.forEach(p => counts[p.status] = (counts[p.status] || 0) + 1);
   $("#pchips").innerHTML = [["", "All " + PORTS.length], ...Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, k + " " + n])]
     .map(([k, l]) => `<button class="chip ${k === pstat ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
-  $("#pchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { pstat = b.dataset.s; store.set("pstat", pstat); renderPorts(); });
+  $("#pchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { pstat = b.dataset.s; store.set("pstat", pstat); pLimit = PAGE; renderPorts(); });
   let rows = PORTS.map((p, i) => [p, i]).filter(([p]) => (!pstat || p.status === pstat) &&
     (!q || [p.switch, p.cv_switch, p.intf, p.device, p.device_port, p.panels.join(" "), p.cables.join(" "), p.iplist, p.end, p.link, p.cv_desc].join(" ").toLowerCase().includes(q)));
   // grouping: by switch, by device, or by patch panel (a port through 2 panels is listed under both)
@@ -824,11 +827,12 @@ function renderPorts() {
   const natural = (a, b) => a[0].switch.localeCompare(b[0].switch, undefined, { numeric: true }) || a[0].nums.join(".").localeCompare(b[0].nums.join("."), undefined, { numeric: true });
   let html = "", shown = 0;
   for (const k of keys) {
-    if (shown > 2500) break;
+    if (shown >= pLimit) break;
     const g = groups.get(k).sort(natural), bad = g.filter(([p]) => p.status !== "ok").length;
     const head = k.startsWith("(") ? esc(k) : devA(k);
     html += `<tr class="grp"><td colspan="9">${head} <span class="muted">· ${g.length} port${g.length > 1 ? "s" : ""}${bad ? " · " + bad + " not ok" : ""}</span></td></tr>`;
     for (const [p, i] of g) {
+      if (shown >= pLimit) break;
       shown++;
       html += `<tr class="click" data-i="${i}"><td>${devA(p.switch)}</td><td class="mono">${esc(p.intf)}</td>
         <td>${p.device ? devA(p.device) : '<span class="muted">' + esc(p.end || "–") + "</span>"}${p.future ? ' <span class="tag bad">future</span>' : ""}</td>
@@ -839,20 +843,28 @@ function renderPorts() {
           ${p.speed ? '<span class="muted" style="font-size:.78rem">' + esc(p.speed.replace(" Gbps", "G")) + "</span>" : ""} ${cvA(p.cv_switch, p.cv_intf, "↗")}` : '<span class="muted">–</span>'}</td></tr>`;
     }
   }
-  $("#ptable tbody").innerHTML = html || '<tr><td colspan="9" class="empty">Nothing for this filter.</td></tr>';
-  $("#ptable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const p = PORTS[+tr.dataset.i]; selectRow(tr); openPort(p.switch, intf(p.nums)); });
+  const more = rows.length > shown ? `<tr><td colspan="9" style="text-align:center;padding:12px"><button class="btn" id="pmore">Show ${Math.min(PAGE * 2, rows.length - shown)} more</button>
+    <span class="muted">${shown} of ${rows.length} shown – a filter narrows it faster</span></td></tr>` : "";
+  $("#ptable tbody").innerHTML = (html || '<tr><td colspan="9" class="empty">Nothing for this filter.</td></tr>') + more;
+  const pm = $("#pmore"); if (pm) pm.onclick = () => { pLimit += PAGE * 2; renderPorts(); };
   const act = [pstat && "status <b>" + esc(pstat) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#psum").innerHTML = `Showing <b>${rows.length}</b> of ${PORTS.length} ports in <b>${keys.length}</b> groups · grouped by <b>${{ switch: "switch", device: "device", panel: "patch panel" }[pgroup]}</b>${act.length ? " · filtered by " + act.join(", ") : ""}
     ${act.length ? '<button class="btn" id="pclear">Clear filters</button>' : ""}`;
-  const pc = $("#pclear"); if (pc) pc.onclick = () => { pstat = ""; store.set("pstat", ""); $("#pq").value = ""; renderPorts(); };
-  $("#pfoot").textContent = (shown > 2500 ? "First ~2500 ports listed – narrow the filter or use Download CSV. " : "") + "Click a row for the port card; click a switch, device or panel name for all its connections.";
+  const pc = $("#pclear"); if (pc) pc.onclick = () => { pstat = ""; store.set("pstat", ""); $("#pq").value = ""; pLimit = PAGE; renderPorts(); };
+  $("#pfoot").textContent = "Click a row for the port card; click a switch, device or panel name for all its connections.";
   reselect("#ptable");
 }
-$("#pq").oninput = () => PORTS && renderPorts();
-$("#pgroup").onchange = () => { pgroup = $("#pgroup").value; store.set("pgroup", pgroup); PORTS && renderPorts(); };
+$("#pq").oninput = debounce(() => { pLimit = PAGE; PORTS && renderPorts(); });
+$("#pgroup").onchange = () => { pgroup = $("#pgroup").value; store.set("pgroup", pgroup); pLimit = PAGE; PORTS && renderPorts(); };
+// one click handler for the whole table (not one per row)
+$("#ptable tbody").onclick = e => {
+  if (e.target.closest("a, button")) return;
+  const tr = e.target.closest("tr.click"); if (!tr || !PORTS) return;
+  const p = PORTS[+tr.dataset.i]; selectRow(tr); openPort(p.switch, intf(p.nums));
+};
 
 // ------------------------------------------------------------- devices list
-let DEVS = null, dkind = store.get("dkind", "device");
+let DEVS = null, dkind = store.get("dkind", "device"), dLimit = PAGE;
 async function loadDevs() {
   try { DEVS = (await api("/api/devices")).items; } catch (e) { $("#dfoot").textContent = e.message; return; }
   renderDevs();
@@ -863,24 +875,26 @@ function renderDevs() {
   const label = { device: "Devices", switch: "Switches", "patch panel": "Patch panels" };
   $("#dchips").innerHTML = [["", "All " + DEVS.length], ...Object.keys(label).filter(k => counts[k]).map(k => [k, label[k] + " " + counts[k]])]
     .map(([k, l]) => `<button class="chip ${k === dkind ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
-  $("#dchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { dkind = b.dataset.s; store.set("dkind", dkind); renderDevs(); });
+  $("#dchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { dkind = b.dataset.s; store.set("dkind", dkind); dLimit = PAGE; renderDevs(); });
   const rows = DEVS.map((d, i) => [d, i]).filter(([d]) => (!dkind || d.kind === dkind) &&
     (!q || [d.device, d.alias, d.template, d.location].join(" ").toLowerCase().includes(q)));
-  $("#dtable tbody").innerHTML = rows.slice(0, 2500).map(([d, i]) => `<tr class="click" data-i="${i}"><td><b>${esc(d.device)}</b>${d.alias ? ' <span class="muted">' + esc(d.alias) + "</span>" : ""}${d.future ? ' <span class="tag bad">future</span>' : ""}</td>
+  $("#dtable tbody").innerHTML = rows.slice(0, dLimit).map(([d, i]) => `<tr class="click" data-i="${i}"><td><b>${esc(d.device)}</b>${d.alias ? ' <span class="muted">' + esc(d.alias) + "</span>" : ""}${d.future ? ' <span class="tag bad">future</span>' : ""}</td>
     <td>${esc(d.kind)}</td><td>${esc(d.template)}</td><td class="muted">${esc(d.location)}${d.position ? " · " + esc(d.position) : ""}</td><td>${d.links || '<span class="muted">0</span>'}</td></tr>`).join("")
     || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
-  $("#dtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { selectRow(tr); openDevice(DEVS[+tr.dataset.i].device); });
+  if (rows.length > dLimit) $("#dtable tbody").insertAdjacentHTML("beforeend", `<tr><td colspan="5" style="text-align:center;padding:12px"><button class="btn" id="dmore">Show more</button> <span class="muted">${dLimit} of ${rows.length} shown</span></td></tr>`);
+  const dm = $("#dmore"); if (dm) dm.onclick = () => { dLimit += PAGE * 2; renderDevs(); };
   const act = [dkind && "type <b>" + esc(label[dkind] || dkind) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#dsum").innerHTML = `Showing <b>${rows.length}</b> of ${DEVS.length}${act.length ? " · filtered by " + act.join(", ") : ""} · sorted by name
     ${act.length ? '<button class="btn" id="dclear">Clear filters</button>' : ""}`;
   const dc = $("#dclear"); if (dc) dc.onclick = () => { dkind = ""; store.set("dkind", ""); $("#dq").value = ""; renderDevs(); };
-  $("#dfoot").textContent = (rows.length > 2500 ? "First 2500 listed – narrow the filter. " : "") + "Click a row: all connections of that device open on the right.";
+  $("#dfoot").textContent = "Click a row: all connections of that device open on the right.";
   reselect("#dtable");
 }
-$("#dq").oninput = () => DEVS && renderDevs();
+$("#dq").oninput = debounce(() => { dLimit = PAGE; DEVS && renderDevs(); });
+$("#dtable tbody").onclick = e => { const tr = e.target.closest("tr.click"); if (!tr || !DEVS) return; selectRow(tr); openDevice(DEVS[+tr.dataset.i].device); };
 
 // ------------------------------------------------------------- mismatches
-let MIS = null, msev = store.get("msev", "error");
+let MIS = null, msev = store.get("msev", "error"), mLimit = PAGE;
 async function loadMis() {
   if (!MIS) { $("#mfoot").textContent = "comparing all ports…"; }
   try { MIS = (await api("/api/mismatches")).items; } catch (e) { $("#mfoot").textContent = e.message; return; }
@@ -893,22 +907,25 @@ function renderMis() {
   const bySev = {}; MIS.forEach(m => bySev[m.severity] = (bySev[m.severity] || 0) + 1);
   $("#mchips").innerHTML = [["", "All " + MIS.length], ...Object.keys(sevs).filter(k => bySev[k]).map(k => [k, sevs[k] + " " + bySev[k]])]
     .map(([k, l]) => `<button class="chip ${k === msev ? "on" : ""}" data-s="${k}">${esc(l)}</button>`).join("");
-  $("#mchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { msev = b.dataset.s; store.set("msev", msev); renderMis(); });
+  $("#mchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { msev = b.dataset.s; store.set("msev", msev); mLimit = PAGE; renderMis(); });
   const rows = MIS.filter(m => (!msev || m.severity === msev) && (!q || [m.switch, m.cv_switch, m.intf, m.says, m.ref_says, m.kind].join(" ").toLowerCase().includes(q)));
-  $("#mtable tbody").innerHTML = rows.slice(0, 1500).map(m => `<tr class="click" data-i="${MIS.indexOf(m)}">
+  $("#mtable tbody").innerHTML = rows.slice(0, mLimit).map(m => `<tr class="click" data-i="${MIS.indexOf(m)}">
     <td><b>${esc(m.switch)}</b> <span class="mono">${esc(m.intf)}</span><br><span class="muted mono">${esc(m.cv_switch)}</span></td>
     <td><span class="sev ${m.severity}">${esc(m.kind)}</span></td><td>${esc(m.source)}:<br><b>${esc(m.says)}</b></td>
     <td>${esc(m.reference)}:<br>${esc(m.ref_says)}</td><td class="muted">${esc(m.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
-  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; selectRow(tr); m.nums && m.nums.length ? openPort(m.switch, intf(m.nums)) : openDevice(m.device || m.switch); });
+  if (rows.length > mLimit) $("#mtable tbody").insertAdjacentHTML("beforeend", `<tr><td colspan="5" style="text-align:center;padding:12px"><button class="btn" id="mmore">Show more</button> <span class="muted">${mLimit} of ${rows.length} shown</span></td></tr>`);
+  const mm = $("#mmore"); if (mm) mm.onclick = () => { mLimit += PAGE * 2; renderMis(); };
   const sevs2 = { error: "errors", warning: "warnings", check: "check on site", naming: "naming only", info: "info" };
   const act = [msev && "severity <b>" + esc(sevs2[msev] || msev) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   $("#msum").innerHTML = `Showing <b>${rows.length}</b> of ${MIS.length}${act.length ? " · filtered by " + act.join(", ") : " · no filter"} · sorted by switch and port
     ${act.length ? '<button class="btn" id="mclear">Clear filters</button>' : ""}`;
   const mc = $("#mclear"); if (mc) mc.onclick = () => { msev = ""; store.set("msev", ""); $("#mq").value = ""; renderMis(); };
-  $("#mfoot").textContent = rows.length > 1500 ? "First 1500 listed – narrow the filter or use Download CSV." : "Click a row: details open on the right, the list stays.";
+  $("#mfoot").textContent = "Click a row: details open on the right, the list stays.";
   reselect("#mtable");
 }
-$("#mq").oninput = () => MIS && renderMis();
+$("#mq").oninput = debounce(() => { mLimit = PAGE; MIS && renderMis(); });
+$("#mtable tbody").onclick = e => { if (e.target.closest("a, button")) return; const tr = e.target.closest("tr.click"); if (!tr || !MIS) return;
+  const m = MIS[+tr.dataset.i]; selectRow(tr); m.nums && m.nums.length ? openPort(m.switch, intf(m.nums)) : openDevice(m.device || m.switch); };
 
 // ------------------------------------------------------------- switches
 let SW = [];
