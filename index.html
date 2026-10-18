@@ -23,7 +23,7 @@
   nav .count { font-size: 0.75rem; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 4px; }
   .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 0.85rem; cursor: pointer; }
   .btn:hover { border-color: var(--accent); } .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .btn.sm { padding: 2px 9px; font-size: 0.78rem; } .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.sm { padding: 2px 9px; font-size: 0.78rem; } .btn.warn { border-color: var(--bad); color: var(--bad); } a.btn { text-decoration: none; display: inline-block; } .btn:disabled { opacity: .45; cursor: not-allowed; }
   input[type=text], input[type=search], select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
   .searchbar { display: flex; gap: 8px; }
   .searchbar input { flex: 1; font-size: 1.05rem; padding: 10px 12px; }
@@ -31,7 +31,7 @@
   .results { margin-top: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .results div { padding: 7px 12px; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 12px; align-items: baseline; }
   .results div:last-child { border-bottom: 0; } .results div:hover { background: var(--hl); }
-  .results .k { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); width: 44px; flex: none; }
+  .results .k { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); width: 52px; flex: none; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-top: 16px; }
   .cardhead { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
   .cardhead h3 { margin: 0; font-size: 1.3rem; }
@@ -49,7 +49,10 @@
   .path .end::after { content: ""; position: absolute; left: 4px; top: 10px; width: 12px; height: 12px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); }
   .path .end.first::after, .path .end.last::after { background: var(--accent); }
   .path .end.missing::after { border-color: var(--bad); background: var(--bad); }
-  .path .end b { font-weight: 600; }
+  .path .end b { font-weight: 600; } a.dev { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); } a.dev:hover { color: var(--accent); border-color: var(--accent); }
+  a.lnk { color: var(--accent); text-decoration: none; white-space: nowrap; } a.lnk:hover { text-decoration: underline; }
+  .names { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; } .names span { font-size: 0.78rem; background: var(--hl); border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; }
+  details.trace summary { cursor: pointer; color: var(--muted); font-size: 0.8rem; } details.trace[open] { padding: 6px 0; }
   .path .end .sub { color: var(--muted); font-size: 0.8rem; }
   .path .cab { font-size: 0.8rem; color: var(--muted); padding-top: 2px; padding-bottom: 2px; }
   .path .cab .id { color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace; }
@@ -70,6 +73,9 @@
   .chip { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 14px; padding: 2px 10px; font-size: 0.8rem; cursor: pointer; }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .src { font-size: 0.72rem; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
+  .sev { font-size: 0.72rem; padding: 0 7px; border-radius: 8px; white-space: nowrap; color: #fff; }
+  .sev.error { background: var(--bad); } .sev.warning { background: var(--warn); } .sev.check { background: var(--accent); } .sev.info { background: var(--muted); }
+  tr.v-device td { background: var(--badbg); } tr.v-port td, tr.v-trunk td, tr.v-switch td, tr.v-nocable td { background: var(--warnbg); }
   .src.snag { background: var(--warnbg); color: var(--warn); } .src.cloudvision { background: var(--infobg); color: var(--accent); }
   .datagrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
   .ds { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
@@ -96,16 +102,18 @@
   <nav>
     <button data-tab="port" class="on">Troubleshoot</button>
     <button data-tab="work">Worklist <span class="count" id="workcount">–</span></button>
+    <button data-tab="mis">Mismatches <span class="count" id="miscount">–</span></button>
+    <button data-tab="shut">To shut <span class="count" id="shutcount">–</span></button>
     <button data-tab="switches">Switches</button>
     <button data-tab="data">Data &amp; CloudVision</button>
   </nav>
 
   <section id="tab-port">
     <form class="searchbar" id="searchform" autocomplete="off">
-      <input type="search" id="q" placeholder="Ethernet12 on dcbeswcpredg001 · DCB.ESW A01 12 · F03639 · DCB.VS 02" autofocus>
+      <input type="search" id="q" placeholder="Device, alias, asset tag, hostname · Ethernet12 on dcbeswcpredg001 · DCB.ESW A01 12 · F03639" autofocus>
       <button class="btn primary" type="submit">Search</button>
     </form>
-    <p class="hint muted">Paste a CloudVision event line ("Ethernet49 on idf2eswcpredg03"), a Patchmanager switch + port, a cable ID or a device name.</p>
+    <p class="hint muted">Any name a device is known by (Patchmanager label, alias, asset tag, description, port plan, snagging list, CloudVision hostname – partial is fine), a switch port ("Ethernet49 on idf2eswcpredg03", "DCB.ESW A01 12") or a cable ID.</p>
     <div class="results hidden" id="results"></div>
     <div id="card"></div>
   </section>
@@ -114,6 +122,7 @@
     <div class="filters">
       <input type="search" id="wq" placeholder="Filter (switch, error, destination, who…)" style="flex:1;min-width:220px">
       <select id="wsrc"><option value="">All sources</option><option value="snag">Snagging list</option><option value="cloudvision">CloudVision only</option></select>
+      <a class="btn" href="/export/worklist.csv">Download CSV</a>
     </div>
     <div class="chips" id="wchips"></div>
     <div class="tablewrap"><table id="wtable">
@@ -121,6 +130,29 @@
         <th class="sort" data-k="destination">Destination</th><th class="sort" data-k="status">Status</th><th class="sort" data-k="since">Since</th><th>Who / Jira</th></tr></thead>
       <tbody></tbody></table></div>
     <p class="muted" id="wfoot"></p>
+  </section>
+
+  <section id="tab-mis" class="hidden">
+    <p class="muted">Every switch port where Patchmanager cabling, the port plan and the snagging list disagree. Reference is the Patchmanager cabling (or the plan when there is no cable).</p>
+    <div class="filters">
+      <input type="search" id="mq" placeholder="Filter (switch, device, …)" style="flex:1;min-width:220px">
+      <a class="btn" href="/export/mismatches.csv">Download CSV</a>
+    </div>
+    <div class="chips" id="mchips"></div>
+    <div class="tablewrap"><table id="mtable">
+      <thead><tr><th>Switch port</th><th>Mismatch</th><th>Source says</th><th>Compared with</th><th>Detail</th></tr></thead>
+      <tbody></tbody></table></div>
+    <p class="muted" id="mfoot"></p>
+  </section>
+
+  <section id="tab-shut" class="hidden">
+    <p class="muted">Devices marked <b>future use</b> (on the device card, or ticked "Future Expansion" in Patchmanager) and every switch port that leads to them – via Patchmanager cabling or the port plan. These ports should be shut until the device goes live. The config below is text only; this tool never changes a switch.</p>
+    <h2>Future devices <span class="muted" id="futcount"></span></h2>
+    <div class="tablewrap"><table id="futtable"><thead><tr><th>Device</th><th>Marked by</th><th>Note</th><th>Since</th><th></th></tr></thead><tbody></tbody></table></div>
+    <h2>Ports to shut</h2>
+    <div class="filters"><a class="btn" href="/export/shut.csv">Download CSV</a><a class="btn" href="/export/shut-eos.txt">Download EOS config</a><button class="btn" id="copyeos">Copy EOS config</button></div>
+    <div class="tablewrap"><table id="shuttable"><thead><tr><th>Switch port</th><th>Future device</th><th>Device port</th><th>Found via / conflict</th></tr></thead><tbody></tbody></table></div>
+    <details style="margin-top:12px"><summary class="muted">EOS config preview</summary><pre class="raw" id="eos"></pre></details>
   </section>
 
   <section id="tab-switches" class="hidden">
@@ -161,15 +193,16 @@ let STATUS = null, WORK = [], CURRENT = null;
 function showTab(t) {
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + t));
-  if (t === "work") loadWork(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
+  if (t === "work") loadWork(); if (t === "mis") loadMis(); if (t === "shut") loadShut(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => { showTab(b.dataset.tab); history.replaceState(null, "", "#" + b.dataset.tab); });
 function route() {
   const h = decodeURIComponent(location.hash.slice(1));
-  const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/);
+  const m = h.match(/^port=(.+)\|(.+)$/), c = h.match(/^cable=(\d+)(?:\|([ab]))?$/), d = h.match(/^device=(.+)$/);
   if (m) { showTab("port"); openPort(m[1], m[2], false); }
+  else if (d) { showTab("port"); openDevice(d[1], false); }
   else if (c) { showTab("port"); openCable(+c[1], c[2], false); }
-  else if (["work", "switches", "data"].includes(h)) showTab(h);
+  else if (["work", "mis", "shut", "switches", "data"].includes(h)) showTab(h);
 }
 window.addEventListener("hashchange", route);
 
@@ -195,7 +228,7 @@ $("#searchform").onsubmit = async e => {
     box.querySelectorAll("[data-i]").forEach(d => d.onclick = () => { box.classList.add("hidden"); pick(results[+d.dataset.i]); });
   } catch (err) { box.classList.remove("hidden"); box.innerHTML = `<div class="err">${esc(err.message)}</div>`; }
 };
-function pick(r) { r.kind === "port" ? openPort(r.switch, intf(r.nums)) : openCable(r.cable, r.side); }
+function pick(r) { r.kind === "port" ? openPort(r.switch, intf(r.nums)) : r.kind === "cable" ? openCable(r.cable, r.side) : openDevice(r.device); }
 
 // ------------------------------------------------------------- port card
 async function openPort(sw, i, push = true) {
@@ -224,6 +257,7 @@ function renderPort(c) {
         <button class="btn sm" id="copy">Copy job card</button><button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div>
     </div>
     <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul>
+    ${compareTable(c.compare)}
     <div class="cols">
       <div><h2>Documented cable path <span class="muted">(Patchmanager)</span></h2>${c.paths.length ? c.paths.map(renderPath).join("") : '<p class="empty">No cable on this port in the Patchmanager export.</p>'}</div>
       <div>
@@ -240,6 +274,15 @@ function renderPort(c) {
   $("#copy").onclick = () => copy(jobCard(c), "Job card copied");
   $("#link").onclick = () => copy(location.href, "Link copied");
 }
+const VERDICT = { ref: '<span class="tag">reference</span>', ok: '<span class="tag ok">same</span>', device: '<span class="tag bad">other device</span>',
+  port: '<span class="tag warn">other port</span>', trunk: '<span class="tag warn">differs – trunk assumed</span>', unknown: '<span class="tag">cabling ends at panel</span>',
+  incomplete: '<span class="tag">no device name</span>' };
+function compareTable(rows) {
+  if (!rows || !rows.length) return "";
+  return `<h2>Sources compared</h2><div class="tablewrap"><table><thead><tr><th>Source</th><th>Device</th><th>Device port</th><th>Detail</th><th></th></tr></thead><tbody>${
+    rows.map(r => `<tr class="v-${r.verdict}"><td>${esc(r.source)}</td><td><a class="dev" href="#device=${encodeURIComponent(r.device)}">${esc(r.device)}</a></td>
+      <td>${esc(r.port)}</td><td class="muted">${esc(r.detail)}</td><td>${VERDICT[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>`;
+}
 function renderPath(p) {
   const hops = p.hops, ends = hops.filter(h => h.type === "end");
   const st = { complete: '<span class="tag ok">complete</span>', open: '<span class="tag warn">ends at panel / open</span>', ambiguous: '<span class="tag warn">ambiguous</span>', loop: '<span class="tag bad">loop</span>' }[p.status] || "";
@@ -248,7 +291,7 @@ function renderPath(p) {
     if (h.type === "note") return `<li class="note">⚠ ${esc(h.text)}</li>`;
     const where = [h.location, h.cabinet, h.u && h.u !== "U" ? h.u : ""].filter(Boolean).join(" · ");
     const cls = ["end", h === ends[0] ? "first" : "", h === ends[ends.length - 1] ? "last" : "", h.missing ? "missing" : ""].join(" ");
-    return `<li class="${cls}"><b>${esc(h.name)}</b>${h.assumed ? ' <span class="tag warn">assumed</span>' : ""}<div class="sub">${esc(h.template)}${where ? " — " + esc(where) : ""}</div></li>`;
+    return `<li class="${cls}"><b>${h.top ? `<a href="#device=${encodeURIComponent(h.top)}" class="dev">${esc(h.name)}</a>` : esc(h.name)}</b>${h.assumed ? ' <span class="tag warn">assumed</span>' : ""}<div class="sub">${esc(h.template)}${where ? " — " + esc(where) : ""}</div></li>`;
   }).join("") + "</ul>";
 }
 function jobCard(c) {
@@ -273,6 +316,68 @@ async function copy(text, msg) {
   try { await navigator.clipboard.writeText(text); toast(msg); }
   catch { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast(msg); }
 }
+
+// ------------------------------------------------------------- device card
+async function openDevice(name, push = true) {
+  if (push) location.hash = "device=" + encodeURIComponent(name);
+  $("#card").innerHTML = '<div class="card muted">loading…</div>';
+  let d; try { d = await api("/api/device?name=" + encodeURIComponent(name)); } catch (e) { $("#card").innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
+  const e = d.equipment, portLink = l => l ? `<a class="lnk" href="#port=${encodeURIComponent(l.switch)}|${encodeURIComponent(intf(l.nums))}">${esc(l.switch)} ${esc(intf(l.nums))} ›</a>` : "";
+  const st = { complete: '<span class="tag ok">complete</span>', open: '<span class="tag warn">open</span>', ambiguous: '<span class="tag warn">ambiguous</span>', loop: '<span class="tag bad">loop</span>' };
+  const conns = d.connections.map((c, i) => `<tr><td><b>${esc(c.port || "–")}</b></td>
+      <td>${c.far ? (c.far.top ? `<a class="dev" href="#device=${encodeURIComponent(c.far.top)}">${esc(c.far.name)}</a>` : esc(c.far.name)) : '<span class="muted">not connected</span>'}
+        <details class="trace"><summary>path (${c.path.hops.filter(h => h.type === "cable").length} cables)</summary>${renderPath(c.path)}</details></td>
+      <td>${st[c.status] || ""}</td><td>${portLink(c.switch_link)}</td></tr>`).join("");
+  const plan = d.plan.map(p => `<tr><td>${portLink({ switch: p.switch, nums: p.nums })}</td><td>${esc(p.device)}</td><td>${esc(p.vlan)}</td><td class="muted">${esc(p.sheet)} r${p.row}</td></tr>`).join("");
+  const snags = d.snags.map(s => `<tr><td>${esc(s.nr)}</td><td>${s.nums.length ? portLink({ switch: s.pm_switch || s.cv_switch, nums: s.nums }) : esc(s.cv_port)}</td><td>${esc(s.error || s.error_type)}</td>
+      <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td><td>${esc(s.first)}</td></tr>`).join("");
+  $("#card").innerHTML = `<div class="card">
+    ${d.future ? `<ul class="checks"><li class="bad">FUTURE USE (${esc(d.future.source)}${d.future.note ? ": " + esc(d.future.note) : ""}) – its switch ports should be shut. See “To shut”.</li></ul>` : ""}
+    <div class="cardhead"><div><h3>${esc(d.device)}${d.is_switch ? ' <span class="tag">switch</span>' : ""}${d.future ? ' <span class="tag bad">future use</span>' : ""}</h3>
+      <div class="muted">${e ? [e.template, e.location, e.position].filter(Boolean).map(esc).join(" · ") : "not in the Patchmanager equipment export"}${d.cv_switch ? ' · CloudVision <span class="mono">' + esc(d.cv_switch) + "</span>" : ""}</div>
+      <div class="names">${d.names.map(([n, via]) => `<span title="${esc(via)}">${esc(n)} <span class="muted">· ${esc(via)}</span></span>`).join("")}</div></div>
+      <div class="tools">${d.is_switch ? "" : d.future && d.future.source !== "marked here" ? "" :
+        `<button class="btn sm ${d.future ? "" : "warn"}" id="futbtn">${d.future ? "Clear future use" : "Mark as future use"}</button>`}
+        <button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div></div>
+    ${d.compare && d.compare.length ? `<h2>Port plan vs. cabling <span class="muted">(${d.compare.filter(r => r.verdict !== "ok").length} differences)</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Device port</th><th>Port plan says</th><th>Patchmanager cabling</th><th></th></tr></thead><tbody>${d.compare.map(r => `<tr class="v-${r.verdict.replace(/ /g, "")}">
+        <td><b>${esc(r.port || r.cabled_port)}</b></td><td>${portLink(r.plan) || '<span class="muted">–</span>'}</td><td>${portLink(r.cabled) || '<span class="muted">no cable</span>'}</td>
+        <td>${{ ok: '<span class="tag ok">same</span>', switch: '<span class="tag bad">other switch port</span>', "no cable": '<span class="tag warn">no cable in Patchmanager</span>', "not in plan": '<span class="tag">not in port plan</span>' }[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    <h2>Connections <span class="muted">(${d.connections.length}, Patchmanager)</span></h2>
+    ${conns ? `<div class="tablewrap"><table><thead><tr><th>Port</th><th>Far end</th><th>Path</th><th>Switch port</th></tr></thead><tbody>${conns}</tbody></table></div>` : '<p class="empty">No cables on this device in the Patchmanager export.</p>'}
+    <h2>Port plan <span class="muted">(${d.plan.length})</span></h2>
+    ${plan ? `<div class="tablewrap"><table><thead><tr><th>Switch port</th><th>Device</th><th>VLAN</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : '<p class="empty">Not in the port plan.</p>'}
+    <h2>Snagging list <span class="muted">(${d.snags.length})</span></h2>
+    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
+  </div>`;
+  $("#link").onclick = () => copy(location.href, "Link copied");
+  const fb = $("#futbtn");
+  if (fb) fb.onclick = async () => {
+    let note = "";
+    if (!d.future) { note = prompt(`Mark ${d.device} as FUTURE USE?\nIts switch ports will be listed as "should be shut".\n\nOptional note (e.g. "phase 2", ticket):`, ""); if (note === null) return; }
+    else if (!confirm(`Clear future use for ${d.device}?`)) return;
+    try { await api("/api/future", { method: "POST", body: JSON.stringify({ device: d.device, future: !d.future, note }) }); toast(d.future ? "Future use cleared" : "Marked as future use"); openDevice(d.device, false); loadShutCount(); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+// ------------------------------------------------------------- ports to shut
+let SHUT = null;
+async function loadShutCount() { try { SHUT = await api("/api/future"); $("#shutcount").textContent = SHUT.ports.length; } catch {} }
+async function loadShut() {
+  await loadShutCount(); if (!SHUT) return;
+  const devs = Object.entries(SHUT.devices);
+  $("#futcount").textContent = "(" + devs.length + ")";
+  $("#futtable tbody").innerHTML = devs.map(([d, v]) => `<tr><td><a class="dev" href="#device=${encodeURIComponent(d)}">${esc(d)}</a></td><td>${esc(v.source)}</td><td>${esc(v.note)}</td><td class="muted">${esc(v.since)}</td>
+    <td>${v.source === "marked here" ? `<button class="btn sm" data-d="${esc(d)}">Clear</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">No device is marked as future use. Open a device and click “Mark as future use”.</td></tr>';
+  $("#futtable tbody").querySelectorAll("button[data-d]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Clear future use for ${b.dataset.d}?`)) return;
+    await api("/api/future", { method: "POST", body: JSON.stringify({ device: b.dataset.d, future: false }) }); loadShut(); });
+  $("#shuttable tbody").innerHTML = SHUT.ports.map(r => `<tr><td><a class="lnk" href="#port=${encodeURIComponent(r.switch)}|${encodeURIComponent(r.intf)}">${esc(r.switch)} ${esc(r.intf)}</a><br><span class="muted mono">${esc(r.cv_switch)}</span></td>
+    <td>${esc(r.device)}</td><td>${esc(r.device_port)}</td><td class="muted">${esc(r.via)}${r.conflict ? '<br><span class="tag bad">conflict – check first</span> ' + esc(r.conflict) : ""}</td></tr>`).join("") || '<tr><td colspan="4" class="empty">No ports.</td></tr>';
+  $("#eos").textContent = SHUT.eos || "";
+}
+$("#copyeos").onclick = () => SHUT && copy(SHUT.eos, "EOS config copied");
 
 // ------------------------------------------------------------- cable card
 async function openCable(idx, side, push = true) {
@@ -302,13 +407,38 @@ function renderWork() {
   rows.sort((a, b) => String(a[wsort.k] ?? "").localeCompare(String(b[wsort.k] ?? ""), undefined, { numeric: true }) * wsort.d);
   $("#wtable tbody").innerHTML = rows.map((w, i) => `<tr class="click" data-i="${WORK.indexOf(w)}"><td><b>${esc(w.switch)}</b><br><span class="muted mono">${esc(w.cv_switch)}</span></td>
     <td class="mono">${esc(w.intf)}</td><td>${esc(w.what)} <span class="src ${w.source}">${w.source === "snag" ? "#" + esc(w.nr) : "CV"}</span></td>
-    <td>${esc(w.destination)}</td><td>${esc(w.status)}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + esc(w.jira) : ""}</td></tr>`).join("")
+    <td>${esc(w.destination)}</td><td>${esc(w.status)}${w.future ? '<br><span class="tag bad" title="' + esc(w.future) + ' is marked future use">future – shut port</span>' : ""}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + esc(w.jira) : ""}</td></tr>`).join("")
     || `<tr><td colspan="7" class="empty">Nothing open${WORK.length ? " for this filter" : " – import the snagging list or configure CloudVision"}.</td></tr>`;
   $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const w = WORK[+tr.dataset.i]; if (w.nums.length) { showTab("port"); openPort(w.switch, intf(w.nums)); } else toast("No interface in this entry"); });
   $("#wfoot").textContent = `${rows.length} of ${WORK.length} shown. Open = snagging list status not fixed / closed / duplicate / ignore, plus CloudVision interface events not yet in the list.`;
 }
 $("#wq").oninput = renderWork; $("#wsrc").onchange = renderWork;
 document.querySelectorAll("#wtable th.sort").forEach(th => th.onclick = () => { wsort = { k: th.dataset.k, d: wsort.k === th.dataset.k ? -wsort.d : 1 }; store.set("wsort", wsort); renderWork(); });
+
+// ------------------------------------------------------------- mismatches
+let MIS = null, msev = store.get("msev", "error");
+async function loadMis() {
+  if (!MIS) { $("#mfoot").textContent = "comparing all ports…"; }
+  try { MIS = (await api("/api/mismatches")).items; } catch (e) { $("#mfoot").textContent = e.message; return; }
+  $("#miscount").textContent = MIS.filter(m => m.severity === "error").length; renderMis();
+}
+function renderMis() {
+  const q = $("#mq").value.trim().toLowerCase(), counts = {};
+  MIS.forEach(m => counts[m.kind] = (counts[m.kind] || 0) + 1);
+  const sevs = { error: "errors", warning: "warnings", check: "check on site", info: "info" };
+  const bySev = {}; MIS.forEach(m => bySev[m.severity] = (bySev[m.severity] || 0) + 1);
+  $("#mchips").innerHTML = [["", "All " + MIS.length], ...Object.keys(sevs).filter(k => bySev[k]).map(k => [k, sevs[k] + " " + bySev[k]])]
+    .map(([k, l]) => `<button class="chip ${k === msev ? "on" : ""}" data-s="${k}">${esc(l)}</button>`).join("");
+  $("#mchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { msev = b.dataset.s; store.set("msev", msev); renderMis(); });
+  const rows = MIS.filter(m => (!msev || m.severity === msev) && (!q || [m.switch, m.cv_switch, m.intf, m.says, m.ref_says, m.kind].join(" ").toLowerCase().includes(q)));
+  $("#mtable tbody").innerHTML = rows.slice(0, 1500).map(m => `<tr class="click" data-i="${MIS.indexOf(m)}">
+    <td><b>${esc(m.switch)}</b> <span class="mono">${esc(m.intf)}</span><br><span class="muted mono">${esc(m.cv_switch)}</span></td>
+    <td><span class="sev ${m.severity}">${esc(m.kind)}</span></td><td>${esc(m.source)}:<br><b>${esc(m.says)}</b></td>
+    <td>${esc(m.reference)}:<br>${esc(m.ref_says)}</td><td class="muted">${esc(m.detail)}</td></tr>`).join("") || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
+  $("#mtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const m = MIS[+tr.dataset.i]; showTab("port"); openPort(m.switch, intf(m.nums)); });
+  $("#mfoot").textContent = `${rows.length} of ${MIS.length} shown${rows.length > 1500 ? " (first 1500 listed – use the filter or Download CSV)" : ""}.`;
+}
+$("#mq").oninput = () => MIS && renderMis();
 
 // ------------------------------------------------------------- switches
 let SW = [];
@@ -372,7 +502,7 @@ $("#locform").onsubmit = async e => {
   } catch (err) { $("#locres").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
 };
 
-loadStatus().then(() => { route(); loadWork(); });
+loadStatus().then(() => { route(); loadWork(); loadShutCount(); });
 setInterval(loadStatus, 30000);
 </script>
 </body>

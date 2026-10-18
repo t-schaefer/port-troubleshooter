@@ -18,7 +18,9 @@ live CloudVision events, side by side.
     python server.py --port 8110
 """
 import argparse
+import csv
 import gzip
+import io
 import json
 import logging
 import os
@@ -41,6 +43,7 @@ META_FILE = DATA_DIR / "meta.json"
 CONFIG_FILE = BASE_DIR / "config.json"
 CONFIG_EXAMPLE = BASE_DIR / "config.example.json"
 SWITCHES_FILE = BASE_DIR / "switches.json"
+FUTURE_FILE = BASE_DIR / "future.json"
 TOKEN_FILE = BASE_DIR / "cv_token.txt"
 LOG_FILE = BASE_DIR / "service.log"
 MAX_UPLOAD = 60 * 1024 * 1024
@@ -62,6 +65,36 @@ STORE = model.Store()
 CV = {"enabled": False, "url": "", "error": "", "devices": [], "events": [], "devices_at": "",
       "events_at": "", "raw_sample": ""}
 CV_WAKE = threading.Event()
+MISMATCH_CACHE = {"key": None, "rows": []}
+
+WORKLIST_COLS = [("source", "Source"), ("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"),
+                 ("intf", "Interface"), ("what", "Problem"), ("destination", "Destination"), ("status", "Status"),
+                 ("since", "Since"), ("who", "Who"), ("jira", "Jira"), ("nr", "Snag Nr")]
+SHUT_COLS = [("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"),
+             ("device", "Future device"), ("device_port", "Device port"), ("via", "Found via"), ("source", "Marked by"),
+             ("note", "Note")]
+MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Switch (Patchmanager)"),
+                 ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"), ("source", "Source"), ("says", "Source says"),
+                 ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
+
+
+def mismatches():
+    """Whole-site comparison takes a few seconds - computed once per data state."""
+    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True))
+    if MISMATCH_CACHE["key"] != key:
+        MISMATCH_CACHE["rows"] = STORE.mismatches()
+        MISMATCH_CACHE["key"] = key
+    return MISMATCH_CACHE["rows"]
+
+
+def to_csv(rows, cols):
+    """Excel-friendly CSV: UTF-8 with BOM, one header row."""
+    f = io.StringIO()
+    w = csv.writer(f)
+    w.writerow([h for _, h in cols])
+    for r in rows:
+        w.writerow([r.get(k, "") for k, _ in cols])
+    return ("\ufeff" + f.getvalue()).encode("utf-8")
 
 
 # ---------------------------------------------------------------- config / files
@@ -100,6 +133,10 @@ def load_saved():
                 log.warning("could not load %s from %s: %s", kind, f, e)
     try:
         STORE.set_overrides(json.loads(SWITCHES_FILE.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+    try:
+        STORE.set_future(json.loads(FUTURE_FILE.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         pass
 
@@ -208,6 +245,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err("bad switch / interface")
                 with LOCK:
                     self._json(STORE.port_card(sw, nums, CV["events"]))
+            elif u.path == "/api/device":
+                name = q.get("name", "").strip()
+                if not name or len(name) > 120:
+                    return self._err("bad device name")
+                with LOCK:
+                    self._json(STORE.device_card(name, CV["events"]))
             elif u.path == "/api/cable":
                 with LOCK:
                     if not STORE.cabling:
@@ -216,6 +259,32 @@ class Handler(BaseHTTPRequestHandler):
                     if not 0 <= idx < len(STORE.cabling.cables):
                         return self._err("bad cable")
                     self._json(STORE.cable_card(idx, q.get("side")))
+            elif u.path == "/api/mismatches":
+                with LOCK:
+                    self._json({"items": mismatches()})
+            elif u.path == "/api/future":
+                with LOCK:
+                    rows = STORE.ports_to_shut()
+                    self._json({"devices": STORE.future_devices(), "ports": rows, "eos": model.eos_shutdown(rows)})
+            elif u.path in ("/export/worklist.csv", "/export/mismatches.csv", "/export/shut.csv", "/export/shut-eos.txt"):
+                ctype, ext = "text/csv; charset=utf-8", "csv"
+                with LOCK:
+                    if u.path == "/export/worklist.csv":
+                        body, name = to_csv(STORE.worklist(CV["events"]), WORKLIST_COLS), "worklist"
+                    elif u.path == "/export/mismatches.csv":
+                        body, name = to_csv(mismatches(), MISMATCH_COLS), "mismatches"
+                    elif u.path == "/export/shut.csv":
+                        body, name = to_csv(STORE.ports_to_shut(), SHUT_COLS), "ports-to-shut"
+                    else:
+                        body, name = model.eos_shutdown(STORE.ports_to_shut()).encode("utf-8"), "shutdown-config"
+                        ctype, ext = "text/plain; charset=utf-8", "txt"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Disposition", 'attachment; filename="port-troubleshooter-%s-%s.%s"' % (
+                    name, datetime.now().strftime("%Y%m%d-%H%M"), ext))
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif u.path == "/api/worklist":
                 with LOCK:
                     self._json({"items": STORE.worklist(CV["events"])})
@@ -288,6 +357,22 @@ class Handler(BaseHTTPRequestHandler):
                     STORE.set_overrides(clean)
                 log.info("switches.json saved (%d overrides)", len(clean))
                 self._json({"ok": True, "overrides": len(clean)})
+            elif u.path == "/api/future":
+                data = json.loads(body or b"{}")
+                dev = str(data.get("device", "")).strip()
+                note = str(data.get("note", "")).strip()[:200]
+                if not dev or len(dev) > 120:
+                    return self._err("bad device")
+                with LOCK:
+                    fut = dict(STORE.future)
+                    if data.get("future"):
+                        fut[dev] = {"note": note, "since": datetime.now().strftime("%Y-%m-%d")}
+                    else:
+                        fut.pop(dev, None)
+                    FUTURE_FILE.write_text(json.dumps(fut, indent=2, sort_keys=True), encoding="utf-8")
+                    STORE.set_future(fut)
+                log.info("FUTURE %s %s %s", "set" if data.get("future") else "cleared", dev, note)
+                self._json({"ok": True})
             elif u.path == "/api/cv/refresh":
                 CV_WAKE.set()
                 self._json({"ok": True})
@@ -310,8 +395,11 @@ def main():
     ThreadingHTTPServer.request_queue_size = 128
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    log.info("Port Troubleshooter on http://0.0.0.0:%d/", args.port)
-    srv.serve_forever()
+    log.info("Port Troubleshooter on http://0.0.0.0:%d/  (Ctrl+C stops it)", args.port)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        log.info("stopped")
 
 
 if __name__ == "__main__":

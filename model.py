@@ -39,6 +39,66 @@ def norm_name(s):
     return re.sub(r"[\s.\-_]", "", str(s or "")).upper()
 
 
+def norm_digits(s):
+    """norm_name without leading zeros in numbers: 'DCB.VS 02' == 'DCB.VS 2' == 'dcbvs2'."""
+    return re.sub(r"(?<!\d)0+(?=\d)", "", norm_name(s))
+
+
+def same_device(a, b):
+    return norm_digits(a) == norm_digits(b)
+
+
+def same_switch_port(a, b):
+    """{switch, nums} == {switch, nums}; plan '1/25' on a fixed switch == port 25."""
+    if not a or not b or not same_device(a["switch"], b["switch"]):
+        return False
+    na, nb = list(a["nums"]), list(b["nums"])
+    strip = lambda n: n[1:] if len(n) == 2 and n[0] == 1 else n
+    return na == nb or strip(na) == strip(nb) or na[:1] == nb[:1] and (len(na) == 1 or len(nb) == 1)
+
+
+PORT_SYNONYMS = [(r"MGNT|MANAGEMENT", "MGMT"), (r"ETHERNET|ENET|LAN|LOM|NIC|RJ45|EXTLAN", "ETH")]
+
+
+def same_port(a, b):
+    """Same physical port despite naming: 'PCLAN1' == 'PC LAN 1', 'ETH.1' == 'Ethernet' ==
+    'ENET 1', 'MGNT' == 'MGMT', 'ETH.3' == '03', '10G.1' == 'Expansion / 10G.1 / 10G.1'.
+    Different numbers stay different: 'ETH.1' != 'ETH.2'."""
+    def keys(p):
+        parts = [x.strip() for x in str(p).split("/") if x.strip()] + [str(p)]
+        out = set()
+        for x in parts:
+            k = norm_digits(x)
+            for pat, rep in PORT_SYNONYMS:
+                k = re.sub(pat, rep, k)
+            out.add(k)
+            if k.endswith("1") and not k[:-1].endswith(tuple("0123456789")):
+                out.add(k[:-1])          # 'ETH1' also as 'ETH' (a single port)
+            num = re.sub(r"\D", "", k)
+            if num and re.fullmatch(r"(ETH|PORT|P)?\d+", k):
+                out.add("#" + num)       # 'ETH3' / '03' / 'P3' -> '#3'
+        out.add(norm_digits(str(p).replace("/", "")))  # 'S5 / D1' == 'S5. D1'
+        return out
+
+    def last_num(p):
+        m = re.search(r"(\d+)\D*$", str(p))
+        return int(m.group(1)) if m else None
+    if keys(a) & keys(b):
+        return True
+    # module paths written differently ('10G.2' / '10G / 2 / 2', '1.7' / '07 / 07'): the
+    # trailing number decides, as long as both have a module/lane structure
+    la, lb = last_num(a), last_num(b)
+    structured = lambda p: bool(re.search(r"[./]", str(p)))
+    return la is not None and la == lb and structured(a) and structured(b) and \
+        not (re.sub(r"[\d\s./]", "", str(a)).upper() in ("ETH", "LAN") and re.sub(r"[\d\s./]", "", str(b)).upper() in ("ETH", "LAN"))
+
+
+def port_sort(end):
+    """Sort key for ports: numbers numerically, then names."""
+    p = norm_port(end.port)
+    return (end.parent or "", end.label if end.label != end.top else "", 0 if p.isdigit() else 1, int(p) if p.isdigit() else 0, p)
+
+
 INTF_RE = re.compile(r"^\s*(?:et(?:hernet)?)?\s*(\d+)(?:/(\d+))?(?:/(\d+))?\s*$", re.I)
 
 
@@ -342,19 +402,37 @@ class Cabling:
 class Equipment:
     def __init__(self, rows):
         self.by_label = defaultdict(list)
+        # a part (line card, cassette, SFP) has its parent's identifier as Location;
+        # follow that up to the top-level device
+        by_id = {",".join(x.strip() for x in r.get("Equipment Identifier", "").split(",")): r for r in rows}
+
+        def top_of(r):
+            """Shortest prefix of the identifier path that is itself equipment = the device.
+            ('...,DCB.A03,DCB.VR 01,LC01,LC01' -> 'DCB.VR 01'; slots like 'LC01' are not rows)"""
+            parts = [x.strip() for x in r.get("Equipment Identifier", "").split(",")]
+            for n in range(1, len(parts) + 1):
+                hit = by_id.get(",".join(parts[:n]))
+                if hit:
+                    return hit.get("Equipment Label", "").strip()
+            return r.get("Equipment Label", "").strip()
+
         for r in rows:
             label = r.get("Equipment Label", "").strip()
             if not label:
                 continue
             ident = [p.strip() for p in r.get("Equipment Identifier", "").split(",")]
+            attrs = parse_attrs(r.get("Equipment Attributes", ""))
+            top = top_of(r)
+            alias = attrs.get("Alias", "").replace("<EQUALS>", "=")
+            alias = alias.split("=")[-1].strip()  # 'Edit1<EQUALS>CS01 AMU 01' -> 'CS01 AMU 01'
             self.by_label[norm_name(label)].append({
-                "label": label,
+                "label": label, "top": top, "alias": alias, "asset": attrs.get("Asset Tag", ""),
                 "template": r.get("Equipment Template", "").strip(),
                 "location": " > ".join(p for p in r.get("Equipment Location", "").split(",")[2:]),
                 "path": ident,
                 "position": r.get("Equipment Position", "").strip(),
                 "description": r.get("Equipment Description", "").strip(),
-                "attrs": parse_attrs(r.get("Equipment Attributes", "")),
+                "attrs": attrs,
                 "defect": [norm_port(p) for p in (r.get("Defect Ports Front", "") + "," + r.get("Defect Ports Rear", "")).split(",") if p.strip()],
                 "reserved": [norm_port(p) for p in (r.get("Reserved Ports Front", "") + "," + r.get("Reserved Ports Rear", "")).split(",") if p.strip()],
             })
@@ -406,6 +484,10 @@ def parse_portplan(sheets):
                     continue
                 nums = (int(slot), int(port)) if slot else (int(port),)
                 eq, eqport, where = "", "", ""
+                if "---" in dev:  # core / border sheets: 'DCR.BSWR 01.1.1 --- DCR.VR 01.1.1' (link, both ends)
+                    sides = [x.strip() for x in dev.split("---")]
+                    other = [x for x in sides if not norm_name(x).startswith(norm_name(sw))] or sides[-1:]
+                    dev = other[0] + " -- "
                 m = PLAN_DEV_RE.match(dev)
                 if m:
                     left, where = m.group(1), m.group(2).strip()
@@ -420,7 +502,14 @@ def parse_portplan(sheets):
                             "eqport": eqport, "where": where, "vlan": g(pc + 2), "cable": g(pc + 3),
                             "sheet": sheet.strip(), "row": ri + 1,
                             "free": dev.lower() in ("", "free", "spare")})
-    return out
+    # the same block can appear on two sheets (e.g. 'Access IDF1' and a personal copy): keep the first
+    seen, uniq = set(), []
+    for p in out:
+        k = (norm_name(p["switch"]), tuple(p["nums"]), norm_name(p["device"]))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(p)
+    return uniq
 
 
 # ---------------------------------------------------------------- snagging list
@@ -511,6 +600,7 @@ class Store:
         self.snags = []
         self.mapping = {}       # PM switch name -> CV hostname (snagging list + overrides)
         self.overrides = {}
+        self.future = {}        # device -> {"note", "since"}: marked "future use" in the page
         self.meta = {}          # kind -> {"file", "loaded", "count"}
         self._rebuild_names()
 
@@ -556,6 +646,208 @@ class Store:
             sw = self.pm_name(s.get("pm_switch") or s.get("cv_switch"))
             if sw and s["nums"]:
                 self.snags_by[(norm_name(sw), tuple(s["nums"]))].append(s)
+        self._build_name_index()
+        self._shut_cache = None
+
+    # -- device names -------------------------------------------------------------
+    def _build_name_index(self):
+        """Every name a device is known by -> the device (its Patchmanager top-level label).
+        Sources: Patchmanager label / alias / asset tag / description, cable ends, cable
+        description, port plan device names, snagging-list destinations, CloudVision hostnames."""
+        idx = defaultdict(dict)   # key -> {device: (name, via)}
+
+        def add(name, device, via):
+            name, device = str(name or "").strip(" *"), str(device or "").strip(" *")
+            if len(norm_name(name)) < 2 or not device:
+                return
+            for k in {norm_name(name), norm_digits(name)}:
+                idx[k].setdefault(device, (name, via))
+
+        self.switch_set = {norm_name(k) for k in self.mapping} | {norm_name(p["switch"]) for p in self.plan}
+        if self.equipment:
+            for items in self.equipment.by_label.values():
+                for e in items:
+                    top = e["top"]
+                    if norm_name(e["label"]) == norm_name(top):
+                        add(e["label"], top, "Patchmanager")
+                        add(e["description"], top, "Patchmanager description")
+                        if re.match(r"^Arista (CCS|DCS)-", e["template"]):
+                            self.switch_set.add(norm_name(top))
+                    elif re.search(r"[A-Za-z]", e["label"]) and len(e["label"]) > 4 and "." in e["label"]:
+                        add(e["label"], top, "Patchmanager (part of %s)" % top)   # 'DCB.ICM 02' inside a frame
+                    add(e["alias"], top, "Patchmanager alias")
+                    add(e["asset"], top, "asset tag")
+        if self.cabling:
+            for c in self.cabling.cables:
+                for end in (c.a, c.b):
+                    add(end.top, end.top, "Patchmanager cabling")
+                if c.description:
+                    for end in (c.a, c.b):
+                        if norm_name(c.description) in norm_name(end.top) or len(c.description) > 6:
+                            add(c.description, end.top, "cable %s description" % c.id)
+        self._known = {k: next(iter(v)) for k, v in idx.items()}
+        device_for = lambda name: self.device_split(name)[0]
+
+        for p in self.plan:
+            if p["equipment"] and not p["free"]:
+                left = PLAN_DEV_RE.match(p["device"])
+                p["_dev"], p["_devport"] = self.device_split(left.group(1) if left else p["equipment"])
+                if not p["_devport"]:
+                    p["_devport"] = p["eqport"]
+                add(p["equipment"], p["_dev"], "port plan (%s)" % p["sheet"])
+        for s in self.snags:
+            d = (s.get("destination") or "").strip(" *")
+            if d:
+                s["_dev"], s["_devport"] = self.device_split(d)
+                if s["_dev"] == d:  # unknown device: strip a trailing port-looking part
+                    m = re.match(r"^(.*?)\.((?:[A-Za-z]*\d+|ETH|LAN|MGMT|MGNT)(?:\.\w+)?)$", d)
+                    if m:
+                        s["_dev"], s["_devport"] = m.group(1), m.group(2)
+                add(s["_dev"], s["_dev"], "snagging list destination")
+        for pm, cv in self.mapping.items():
+            add(cv, pm, "CloudVision hostname")
+            add(pm, pm, "Patchmanager")
+        # names that are only known from plan / snags but are cabled under another spelling:
+        # point them at the cabled device when the normalised name is the same
+        self.name_index = idx
+
+    def device_split(self, name):
+        """'DCB.ICM 02.1.SFP' -> ('DCB.ICM 02', '1.SFP') when 'DCB.ICM 02' is a known device;
+        'DCR.ESW B01.50' -> ('DCR.ESW B01', '50'). Unknown: (name, '')."""
+        name = str(name or "").strip(" *")
+        known = getattr(self, "_known", {})
+        # 'DCRSRVIRAXSV003 *DCR.VS 23' / 'A; B': several names - take the first known one
+        pieces = [x.strip() for x in re.split(r"[*;]|\s{2,}", name) if x.strip()]
+        if len(pieces) > 1:
+            for x in pieces:
+                d, rest = self.device_split(x)
+                if norm_name(d) in known:
+                    return d, rest
+            name = pieces[0]
+        # free text after the name: 'DCB.BKP 02 DCB B06 Veeam ...' -> 'DCB.BKP 02'
+        words = name.split(" ")
+        for n in range(len(words), 1, -1):
+            d = known.get(norm_name(" ".join(words[:n])))
+            if d and n < len(words):
+                return d, ""
+        parts = name.split(".")
+        for n in range(len(parts), 0, -1):
+            d = known.get(norm_name(".".join(parts[:n])))
+            if d:
+                return d, ".".join(parts[n:])
+        # unknown device: names end in ' <number>' ('OC.IP/HL 01.100G A.1' -> 'OC.IP/HL 01');
+        # hostnames have no space ('MC1STBDGTPLY001.ETH.1' -> 'MC1STBDGTPLY001')
+        m = re.match(r"^(.*?\s\d+[A-Za-z]?)\.(.+)$", name) or re.match(r"^([^.\s]+\d)\.(.+)$", name)
+        if m:
+            return m.group(1), m.group(2)
+        return name, ""
+
+    def device_of(self, name):
+        """Best device for a name (exact key), or None."""
+        for k in (norm_name(name), norm_digits(name)):
+            if k in self.name_index:
+                return next(iter(self.name_index[k]))
+        return None
+
+    def find_devices(self, q, limit=40):
+        """Name search: exact, then prefix, then substring (>= 3 characters)."""
+        keys = {norm_name(q), norm_digits(q)}
+        found = {}  # device -> (rank, name, via)
+        for k in keys:
+            for dev, (name, via) in self.name_index.get(k, {}).items():
+                found.setdefault(dev, (0, name, via))
+        k0 = norm_name(q)
+        if len(found) < limit and len(k0) >= 2:
+            for key, devs in self.name_index.items():
+                for k in (k0,):
+                    rank = 1 if key.startswith(k) else 2 if (len(k) >= 3 and k in key) else None
+                    if rank is None:
+                        continue
+                    for dev, (name, via) in devs.items():
+                        if dev not in found or found[dev][0] > rank:
+                            found[dev] = (rank, name, via)
+        # one result per device, prefer the Patchmanager spelling of the device itself
+        out = sorted(found.items(), key=lambda kv: (kv[1][0], len(kv[0]), kv[0]))
+        return [(dev, name, via) for dev, (rank, name, via) in out[:limit]]
+
+    def is_switch(self, name):
+        return norm_name(name) in getattr(self, "switch_set", set())
+
+    def device_card(self, name, cv_events=None):
+        """Everything about one device: Patchmanager data, every cabled port traced to its far
+        end (with the switch port to open), port plan rows and snags that name it."""
+        dev = self.device_of(name) or name
+        nd = norm_name(dev)
+        card = {"device": dev, "names": [], "equipment": None, "connections": [], "plan": [], "snags": [],
+                "is_switch": self.is_switch(dev), "cv_switch": self.cv_name(dev) or ""}
+        names = {}
+        for key, devs in self.name_index.items():
+            if dev in devs:
+                n, via = devs[dev]
+                names.setdefault(norm_name(n), (n, via))
+        card["names"] = sorted(names.values(), key=lambda x: x[0].lower())
+        if self.equipment:
+            e = self.equipment.get(dev)
+            if e:
+                card["equipment"] = {k: e[k] for k in ("label", "template", "location", "position", "description", "alias", "asset")}
+        if self.cabling:
+            for c, s in sorted(self.cabling.by_top.get(nd, []), key=lambda cs: port_sort(getattr(cs[0], cs[1]))):
+                me = getattr(c, s)
+                path = self.cabling.trace(c, s)
+                ends = [h for h in path["hops"] if h["type"] == "end" and not h.get("missing")]
+                far = ends[-1] if len(ends) > 1 else None
+                link = None
+                if far and self.is_switch(far.get("top")) and not card["is_switch"]:
+                    link = self._switch_ref(far)
+                elif card["is_switch"]:
+                    link = self._switch_ref(me.to_dict())
+                card["connections"].append({"port": " / ".join(x for x in (
+                    me.parent if me.parent not in ("", me.top) else "", me.label if me.label != me.top else "", me.port) if x),
+                    "far": far, "status": path["status"], "path": path, "switch_link": link})
+        for p in self.plan:
+            if norm_name(p.get("_dev") or p["equipment"]) == nd or (nd and norm_name(p["switch"]) == nd and not p["free"]):
+                card["plan"].append(p)
+        for s in self.snags:
+            if nd and norm_name(s.get("_dev")) == nd or (card["is_switch"] and norm_name(self.pm_name(
+                    s.get("pm_switch") or s.get("cv_switch")) or "") == nd):
+                card["snags"].append(s)
+        card["compare"] = self._compare_device(card)
+        card["future"] = self.future_of(dev)
+        return card
+
+    def _compare_device(self, card):
+        """Per device port: switch port in the port plan vs. where Patchmanager cabling goes.
+        verdict: ok | switch (cabled to another switch port) | no cable (plan only) | not in plan."""
+        if card["is_switch"]:
+            return []
+        rows, used = [], set()
+        conns = [c for c in card["connections"] if c["switch_link"]]
+        for p in card["plan"]:
+            dport = p.get("_devport") or p["eqport"]
+            plan_ref = {"switch": p["switch"], "nums": p["nums"]}
+            hit = next((c for c in conns if dport and same_port(dport, c["port"])), None)
+            if not hit:  # same switch port, other device-port spelling
+                hit = next((c for c in conns if same_switch_port(c["switch_link"], plan_ref)), None)
+            if hit:
+                used.add(id(hit))
+                verdict = "ok" if same_switch_port(hit["switch_link"], plan_ref) else "switch"
+                rows.append({"port": dport or hit["port"], "plan": plan_ref, "cabled": hit["switch_link"],
+                             "cabled_port": hit["port"], "verdict": verdict})
+            else:
+                rows.append({"port": dport, "plan": plan_ref, "cabled": None, "cabled_port": "", "verdict": "no cable"})
+        for c in conns:
+            if id(c) not in used:
+                rows.append({"port": c["port"], "plan": None, "cabled": c["switch_link"], "cabled_port": c["port"],
+                             "verdict": "not in plan"})
+        return rows
+
+    def _switch_ref(self, end):
+        """A cable end on a switch -> {switch, nums} for the port card, or None."""
+        p = norm_port(end.get("port"))
+        if not p.isdigit():
+            return None
+        m = re.fullmatch(r"LC0*(\d+)", end.get("parent") or "")
+        return {"switch": end.get("top"), "nums": [int(m.group(1)), int(p)] if m else [int(p)]}
 
     # -- names -------------------------------------------------------------------
     def pm_name(self, name):
@@ -595,7 +887,7 @@ class Store:
         return sorted(({"pm": pm, "cv": self.cv_name(pm) or ""} for pm in names.values()), key=lambda x: x["pm"])
 
     # -- the port card -----------------------------------------------------------
-    def port_card(self, switch, nums, cv_events=None):
+    def port_card(self, switch, nums, cv_events=None, with_shut=True):
         """Everything about one switch port. `switch` PM or CV name, `nums` tuple."""
         pm = self.pm_name(switch) or switch
         cv = self.cv_name(pm) or (switch if switch and switch != pm else "")
@@ -630,12 +922,62 @@ class Store:
                               and parse_intf(e.get("interface")) == nums]
         if self.equipment:
             card["equipment"] = self.equipment.get(pm)
+        card["compare"] = self._compare_port(card)
+        card["shut"] = self.shut_for(pm, nums) if with_shut else None
         card["checks"] = self._checks(card)
         return card
+
+    def _compare_port(self, card):
+        """What each source says is connected to this switch port: [{source, device, port, detail, verdict}].
+        verdict: ok | device (different device) | port (same device, other port) | '' (nothing to compare)."""
+        rows = []
+        for p in card["paths"]:
+            ends = [h for h in p["hops"] if h["type"] == "end" and not h.get("missing")]
+            if len(ends) > 1:
+                far = ends[-1]
+                port = " / ".join(x for x in (far.get("parent") if far.get("parent") not in ("", far.get("top")) else "",
+                                              far.get("label") if far.get("label") != far.get("top") else "", far.get("port")) if x)
+                rows.append({"source": "Patchmanager cabling", "device": far.get("top") or far.get("name"), "port": port,
+                             "detail": "%s, %d cables" % (p["status"], sum(1 for h in p["hops"] if h["type"] == "cable")),
+                             "open": p["status"] != "complete",
+                             "assumed": any(h.get("assumed") for h in p["hops"])})
+        for p in card["plan"]:
+            if not p["free"]:
+                rows.append({"source": "Port plan", "device": p.get("_dev") or p["equipment"], "port": p.get("_devport") or p["eqport"],
+                             "detail": "%s r%s, VLAN %s" % (p["sheet"], p["row"], p["vlan"])})
+        seen = set()
+        for s in sorted(card["snags"], key=lambda x: x.get("first") or "", reverse=True):
+            if s.get("_dev") and (s["_dev"], s.get("_devport")) not in seen and tuple(s["nums"]) == tuple(card["nums"]):
+                seen.add((s["_dev"], s.get("_devport")))
+                rows.append({"source": "Snagging list", "device": s["_dev"], "port": s.get("_devport", ""),
+                             "detail": "#%s %s" % (s.get("nr", ""), s.get("status") or "open")})
+        # verdict against the Patchmanager cabling (the reference); without cabling against the plan
+        ref = next((r for r in rows if r["source"] == "Patchmanager cabling"), None) or \
+            next((r for r in rows if r["source"] == "Port plan"), None)
+        for r in rows:
+            if r is ref or not ref:
+                r["verdict"] = "ref" if r is ref else ""
+            elif not norm_name(r["device"]) or str(r["device"]).startswith("."):
+                r["verdict"] = "incomplete"  # plan row without device name ('.ETH.1 -- CS9/Ceiling')
+            elif ref.get("open") and not same_device(r["device"], ref["device"]):
+                r["verdict"] = "unknown"   # cabling stops at a panel: the device behind it is not documented
+            elif ref.get("assumed") and not same_device(r["device"], ref["device"]):
+                r["verdict"] = "trunk"     # differs, but the cabling crossed a trunk with an assumed port
+            elif not same_device(r["device"], ref["device"]):
+                r["verdict"] = "device"
+            elif r["port"] and ref["port"] and not same_port(r["port"], ref["port"]):
+                r["verdict"] = "port"
+            else:
+                r["verdict"] = "ok"
+        return rows
 
     def _checks(self, card):
         """Plain-language findings: documentation gaps and mismatches."""
         out = []
+        if card.get("shut"):
+            sh = card["shut"]
+            out.append(("bad", "%s is marked FUTURE USE (%s) - this port should be shut down until it goes live." % (
+                sh["device"], sh["source"])))
         if self.cabling is not None and not card["paths"]:
             out.append(("warn", "No cable documented in Patchmanager on %s %s." % (card["switch"], card["intf"])))
         far_ends = []
@@ -659,15 +1001,24 @@ class Store:
                 out.append(("info", "%d of %d cables on this path are not ticked as installed / labelled in Patchmanager." % (
                     len(flagged), sum(1 for h in p["hops"] if h["type"] == "cable"))))
         live = [p for p in card["plan"] if not p["free"]]
-        if live and far_ends:
-            want = norm_name(live[0]["equipment"])
-            got = [norm_name(f.get("top")) for f in far_ends] + [norm_name(f.get("label")) for f in far_ends]
-            if want and want not in got:
-                out.append(("bad", "Port plan says %s, Patchmanager cabling ends at %s." % (
-                    live[0]["equipment"] or live[0]["device"], ", ".join(f["name"] for f in far_ends))))
-            elif want:
-                out.append(("ok", "Port plan and Patchmanager agree: %s." % live[0]["equipment"]))
-        elif card["plan"] and not live and far_ends:
+        cmp_rows = card.get("compare", [])
+        ref = next((r for r in cmp_rows if r.get("verdict") == "ref"), None)
+        if any(r["verdict"] == "trunk" for r in cmp_rows):
+            out.append(("warn", "Port plan names another device, but the Patchmanager path crosses a trunk where the port "
+                                "number is assumed - check the trunk on site before trusting either."))
+        if any(r["verdict"] == "incomplete" for r in cmp_rows):
+            out.append(("info", "The port plan row has no device name."))
+        if any(r["verdict"] == "unknown" for r in cmp_rows):
+            out.append(("warn", "Cannot compare with the port plan: the Patchmanager path stops at %s." % ref["device"]))
+        for r in cmp_rows:
+            if r["verdict"] == "device":
+                out.append(("bad", "%s says %s, %s says %s." % (r["source"], r["device"] + (" " + r["port"] if r["port"] else ""),
+                                                             ref["source"], ref["device"] + (" " + ref["port"] if ref["port"] else ""))))
+            elif r["verdict"] == "port":
+                out.append(("warn", "%s: same device %s, but port %s instead of %s." % (r["source"], r["device"], r["port"], ref["port"])))
+        if ref and len(cmp_rows) > 1 and all(r["verdict"] in ("ok", "ref") for r in cmp_rows):
+            out.append(("ok", "All sources agree: %s%s." % (ref["device"], " " + ref["port"] if ref["port"] else "")))
+        if card["plan"] and not live and far_ends:
             out.append(("warn", "Port plan lists this port as free, but Patchmanager has a cable on it."))
         eq = card.get("equipment")
         if eq:
@@ -684,9 +1035,11 @@ class Store:
 
     # -- search ---------------------------------------------------------------------
     def search(self, q, limit=60):
-        """Free text -> list of results {kind, title, sub, switch, nums | cable}.
-        Understands 'Ethernet12 on dcbeswcpredg001', 'DCB.ESW A01 12', 'DCB.ESW A01.12',
-        'dcbeswcpredg001 Et5/2', a cable id ('F03639'), equipment ('DCB.VS 02')."""
+        """Free text -> list of results {kind: port | device | cable, title, sub, ...}.
+        Port:   'Ethernet12 on dcbeswcpredg001', 'DCB.ESW A01 12', 'DCB.ESW A01.12', 'swhost Et5/2'
+        Cable:  'F03639'
+        Device: any name it is known by (label, alias, asset tag, description, port plan,
+                snag destination, CloudVision hostname), also partial ('AMU 01', 'vs 2')."""
         q = (q or "").strip()
         if not q:
             return []
@@ -696,39 +1049,22 @@ class Store:
             sw, intf = m.group(2), m.group(1)
         else:
             m = re.match(r"^(.*?)[\s.:]+((?:et(?:hernet)?)?\s*\d+(?:/\d+){0,2})\s*$", q, re.I)
-            sw, intf = (m.group(1), m.group(2)) if m else (q, None)
-        pm = self.pm_name(sw)
+            sw, intf = (m.group(1), m.group(2)) if m else (None, None)
         nums = parse_intf(intf) if intf else None
-        if pm and nums:
+        pm = self.pm_name(sw) if sw else None
+        if pm and nums and self.is_switch(pm):
             res.append({"kind": "port", "title": "%s %s" % (pm, intf_name(nums)), "sub": self.cv_name(pm) or "",
                         "switch": pm, "nums": list(nums)})
-        elif pm and self.cabling:
-            for n, _ in self.cabling.ports_of(pm)[:limit]:
-                res.append({"kind": "port", "title": "%s %s" % (pm, intf_name(n)), "sub": "", "switch": pm, "nums": list(n)})
         if self.cabling:
             for c in self.cabling.by_id.get(q.upper(), []):
-                res.append({"kind": "cable", "title": "Cable %s" % c.id, "sub": "%s  <->  %s" % (c.a.name(), c.b.name()),
-                            "cable": c.idx})
-        if not res:
-            nq = norm_name(q)
-            # equipment / devices: port plan device names and cable ends
-            for p in self.plan:
-                if nq and (nq in norm_name(p["device"])):
-                    res.append({"kind": "port", "title": "%s %s" % (p["switch"], intf_name(p["nums"])),
-                                "sub": p["device"], "switch": p["switch"], "nums": p["nums"]})
-                    if len(res) >= limit:
-                        break
-            if self.cabling and len(res) < limit:
-                seen = set()
-                for c in self.cabling.cables:
-                    for side in ("a", "b"):
-                        e = getattr(c, side)
-                        if nq and nq in norm_name(e.top) and (c.idx, side) not in seen:
-                            seen.add((c.idx, side))
-                            res.append({"kind": "cable", "title": "%s" % e.name(), "sub": "cable %s (%s)" % (c.id, c.template),
-                                        "cable": c.idx, "side": side})
-                    if len(res) >= limit:
-                        break
+                res.append({"kind": "cable", "title": "Cable %s" % c.id,
+                            "sub": "%s  <->  %s" % (c.a.name(), c.b.name()), "cable": c.idx})
+        for dev, name, via in self.find_devices(q, limit=limit):
+            e = self.equipment.get(dev) if self.equipment else None
+            sub = " · ".join(x for x in ((e or {}).get("template", ""), (e or {}).get("location", "")) if x)
+            if norm_name(name) != norm_name(dev):
+                sub = ("%s: %s" % (via, name)) + (" · " + sub if sub else "")
+            res.append({"kind": "switch" if self.is_switch(dev) else "device", "title": dev, "sub": sub, "device": dev})
         return res[:limit]
 
     def cable_card(self, idx, side=None):
@@ -751,6 +1087,9 @@ class Store:
                           "status": s.get("status") or "open", "since": s.get("first", ""),
                           "who": s.get("who", ""), "jira": s.get("jira", ""), "nr": s.get("nr", ""),
                           "destination": s.get("destination", "")})
+        for i in items:
+            sh = self.shut_for(i["switch"] or "", i["nums"]) if i["nums"] else None
+            i["future"] = sh["device"] if sh else ""
         known = {(norm_name(i["switch"] or ""), tuple(i["nums"])) for i in items}
         for e in cv_events or []:
             nums = parse_intf(e.get("interface"))
@@ -760,12 +1099,148 @@ class Store:
             items.append({"source": "cloudvision", "switch": pm, "cv_switch": e.get("device", ""),
                           "nums": list(nums), "intf": intf_name(nums), "what": e.get("title", ""),
                           "status": "CloudVision " + (e.get("severity") or "").lower(), "since": e.get("time", ""),
-                          "who": "", "jira": "", "nr": "", "destination": ""})
+                          "who": "", "jira": "", "nr": "", "destination": "",
+                          "future": (self.shut_for(pm, nums) or {}).get("device", "")})
         return items
+
+    # -- future use ------------------------------------------------------------------
+    def set_future(self, future):
+        self.future = {k: v for k, v in (future or {}).items() if k}
+        self._shut_cache = None
+
+    def future_devices(self):
+        """{device: {"source", "note", "since"}} - marked in this tool, or ticked
+        'Future Expansion' on the device in Patchmanager."""
+        out = {}
+        if self.equipment:
+            for items in self.equipment.by_label.values():
+                for e in items:
+                    if e["label"] == e["top"] and e["attrs"].get("Future Expansion") == "true":
+                        out[e["label"]] = {"source": "Patchmanager 'Future Expansion'", "note": "", "since": ""}
+        for dev, v in self.future.items():
+            out[dev] = {"source": "marked here", "note": v.get("note", ""), "since": v.get("since", "")}
+        return out
+
+    def future_of(self, device):
+        if not device:
+            return None
+        fut = self.future_devices()
+        for d, v in fut.items():
+            if same_device(d, device):
+                return dict(v, device=d)
+        return None
+
+    def ports_to_shut(self):
+        """Every switch port that leads to a future device (Patchmanager cabling or port plan):
+        [{switch, cv_switch, nums, intf, device, device_port, via, source, note}]"""
+        rows, seen = [], set()
+        for dev, info in sorted(self.future_devices().items()):
+            card = self.device_card(dev)
+            cands = [(c["switch_link"], c["port"], "Patchmanager cabling") for c in card["connections"] if c["switch_link"]]
+            cands += [({"switch": p["switch"], "nums": p["nums"]}, p.get("_devport") or p["eqport"], "port plan")
+                      for p in card["plan"]]
+            for link, dport, via in cands:
+                pm = self.pm_name(link["switch"]) or link["switch"]
+                nums = list(link["nums"])
+                if len(nums) == 2 and nums[0] == 1 and not (self.cabling and self.cabling.is_modular(pm)):
+                    nums = nums[1:]   # core plan '1/25' = port 25
+                key = (norm_name(pm), tuple(nums))
+                if key in seen:
+                    continue
+                seen.add(key)
+                # another source naming a different device on this port = do NOT shut blindly
+                pc = self.port_card(pm, nums, with_shut=False)
+                others = sorted({"%s: %s" % (r["source"], r["device"]) for r in pc["compare"]
+                                 if r["verdict"] != "incomplete" and norm_name(r["device"])
+                                 and not str(r["device"]).startswith(".") and not same_device(r["device"], dev)
+                                 and not self.future_of(r["device"])})
+                rows.append({"switch": pm, "cv_switch": self.cv_name(pm) or "", "nums": nums, "intf": intf_name(nums),
+                             "device": dev, "device_port": dport, "via": via, "source": info["source"], "note": info["note"],
+                             "conflict": "; ".join(others)})
+        rows.sort(key=lambda r: (norm_name(r["switch"]), r["nums"]))
+        return rows
+
+    def shut_keys(self):
+        if getattr(self, "_shut_cache", None) is None:
+            self._shut_cache = {(norm_name(r["switch"]), tuple(r["nums"])): r for r in self.ports_to_shut()}
+        return self._shut_cache
+
+    def shut_for(self, switch, nums):
+        """The ports-to-shut row for a switch port (lanes count as the port), or None."""
+        keys = self.shut_keys()
+        n = tuple(nums)
+        sw = norm_name(self.pm_name(switch) or switch)
+        return keys.get((sw, n)) or keys.get((sw, n[:2])) or keys.get((sw, n[:1]))
+
+    def mismatches(self):
+        """Every switch port (port plan + documented cabling + snags) where the sources disagree.
+        Rows: {switch, cv_switch, intf, nums, severity, kind, source, says, reference, ref_says, detail}"""
+        ports = set()
+        for p in self.plan:
+            if not p["free"]:
+                ports.add((p["switch"], tuple(p["nums"])))
+        for (sw, nums) in self.snags_by:
+            pm = self.pm_name(sw)
+            if pm:
+                ports.add((pm, nums))
+        if self.cabling:
+            for sw in list(getattr(self, "switch_set", set())):
+                pm = self.pm_name(sw) or sw
+                for nums, _ in self.cabling.ports_of(pm):
+                    ports.add((pm, nums))
+        out, seen = [], set()
+        for sw, nums in sorted(ports, key=lambda x: (norm_name(x[0]), x[1])):
+            card = self.port_card(sw, nums)
+            key = (norm_name(card["switch"]), tuple(card["nums"][:2] if card.get("modular") else card["nums"][:1]))
+            if key in seen and len(nums) > 1 and not card.get("modular"):
+                continue
+            seen.add(key)
+            ref = next((r for r in card["compare"] if r["verdict"] == "ref"), None)
+            pm_paths = [r for r in card["compare"] if r["source"] == "Patchmanager cabling"]
+            for r in card["compare"]:
+                if r["verdict"] in ("ok", "ref", ""):
+                    continue
+                sev = {"device": "error", "port": "warning", "trunk": "check", "unknown": "info", "incomplete": "info"}[r["verdict"]]
+                kind = {"device": "different device", "port": "different port", "trunk": "different device (trunk assumed)",
+                        "unknown": "cabling ends at panel", "incomplete": "plan without device name"}[r["verdict"]]
+                if r["source"] == "Patchmanager cabling":
+                    kind = "two cables on one port"
+                out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"],
+                            "nums": card["nums"], "severity": sev, "kind": kind, "source": r["source"],
+                            "says": (r["device"] + " " + (r["port"] or "")).strip(), "reference": ref["source"] if ref else "",
+                            "ref_says": (ref["device"] + " " + (ref["port"] or "")).strip() if ref else "",
+                            "detail": r.get("detail", "")})
+            if self.cabling is not None and not pm_paths and any(not p["free"] for p in card["plan"]):
+                live = [p for p in card["plan"] if not p["free"]][0]
+                out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"], "nums": card["nums"],
+                            "severity": "warning", "kind": "in plan, no cable in Patchmanager", "source": "Port plan",
+                            "says": live["device"], "reference": "Patchmanager cabling", "ref_says": "(nothing)",
+                            "detail": "%s r%s" % (live["sheet"], live["row"])})
+        return out
 
     def status(self):
         return {"meta": self.meta, "switches": len(self.switches()), "mapping": len(self.mapping),
                 "mapping_dups": self.mapping_dups}
+
+
+def eos_shutdown(rows):
+    """Arista EOS config text to shut the given ports, one block per switch. Only text - this
+    tool never logs in to a switch."""
+    out, by = [], defaultdict(list)
+    for r in rows:
+        by[(r["cv_switch"] or r["switch"], r["switch"])].append(r)
+    for (host, pm), items in sorted(by.items()):
+        out.append("! %s  (%s)" % (host, pm))
+        out.append("configure")
+        for r in items:
+            desc = re.sub(r"[^\w .:/\-]", "", "FUTURE %s %s" % (r["device"], r["device_port"]))[:80].strip()
+            if r.get("conflict"):  # documentation disagrees: only a comment, never a shutdown
+                out += ["! CHECK FIRST - not shut: %s - documentation also says %s" % (r["intf"], r["conflict"]),
+                        "! interface %s" % r["intf"], "!    shutdown"]
+                continue
+            out += ["interface %s" % r["intf"], "   description %s" % desc, "   shutdown"]
+        out += ["end", ""]
+    return "\n".join(out)
 
 
 def base_len(nums, modular):

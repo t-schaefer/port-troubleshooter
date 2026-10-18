@@ -82,10 +82,43 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(card["paths"][0]["status"], "open")
 
     def test_plan_mismatch(self):
-        self.s.plan[0]["equipment"] = "OTHER 01"
+        self.s.plan[0].update(equipment="OTHER 01", device="OTHER 01.ETH -- R/Wall")
         self.s._rebuild_names()
         card = self.s.port_card("SW 01", (12,))
         self.assertIn("bad", [c[0] for c in card["checks"]])
+        self.assertEqual([r["verdict"] for r in card["compare"]], ["ref", "device"])
+
+    def test_plan_other_port_same_device(self):
+        self.s.plan[0].update(device="CAM 01.IO -- R/Wall", eqport="IO")
+        self.s._rebuild_names()
+        card = self.s.port_card("SW 01", (12,))
+        self.assertEqual([r["verdict"] for r in card["compare"]], ["ref", "port"])
+
+    def test_future_device_ports_to_shut(self):
+        self.s.set_future({"CAM 01": {"note": "phase 2"}})
+        rows = self.s.ports_to_shut()
+        self.assertEqual([(r["switch"], r["intf"], r["device"]) for r in rows], [("SW 01", "Ethernet12", "CAM 01")])
+        card = self.s.port_card("SWHOST01", (12,))
+        self.assertTrue(card["shut"])
+        self.assertIn("FUTURE", " ".join(t for _, t in card["checks"]))
+        eos = model.eos_shutdown(rows)
+        self.assertIn("! SWHOST01", eos)
+        self.assertIn("interface Ethernet12\n   description FUTURE CAM 01 ETH\n   shutdown", eos)
+        # the plan names another device on the port: listed, but not shut in the config
+        self.s.plan[0].update(device="OTHER 01.ETH -- R/Wall", equipment="OTHER 01")
+        self.s._rebuild_names()
+        rows = self.s.ports_to_shut()
+        self.assertIn("OTHER 01", rows[0]["conflict"])
+        self.assertIn("! CHECK FIRST", model.eos_shutdown(rows))
+        self.assertNotIn("\n   shutdown", model.eos_shutdown(rows))
+        self.s.set_future({})
+        self.assertFalse(self.s.port_card("SW 01", (12,))["shut"])
+
+    def test_same_port(self):
+        self.assertTrue(model.same_port("PCLAN1", "PC LAN 1"))
+        self.assertTrue(model.same_port("ETH.1", "Eth"))
+        self.assertTrue(model.same_port("10G.1", "Expansion / 10G.1 / 10G.1"))
+        self.assertFalse(model.same_port("ETH.2", "ETH.1"))
 
     def test_search_forms(self):
         for q in ("Ethernet12 on swhost01", "SW 01 12", "SW 01.12", "swhost01 Et12"):

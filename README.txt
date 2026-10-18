@@ -9,9 +9,31 @@ everything that is still open.
   Search accepts:   Ethernet49 on idf2eswcpredg03      (paste straight from CloudVision)
                     DCB.ESW A01 12   /   DCB.ESW A01.12   /   dcbeswcpredg001 Et12
                     F03639                              (Patchmanager cable ID)
-                    DCB.VS 02                           (device name - port plan + cabling)
-  Port card:        Copy job card (plain text for the technician), Copy link, Print,
+                    any name a device is known by - also partial, case / dots / leading
+                    zeros ignored ('dcb vs 2' finds DCB.VS 02):
+                      Patchmanager label, alias (CS01 AMU 01), asset tag (QID...), description
+                      (Dataminer), port plan name (MC1STBDGTPLY001), snagging-list
+                      destination, CloudVision hostname
+  Port card:        Sources compared (Patchmanager cabling / port plan / snagging list:
+                    same / other device / other port), Copy job card, Copy link, Print,
                     ◀ port / port ▶ to step through neighbouring ports.
+  Device card:      every cabled port traced to its far end with a link to the switch port,
+                    port plan vs. cabling per device port, all names the device is known by.
+  Mismatches tab:   every switch port where the sources disagree (errors / warnings /
+                    check on site / info), click opens the port.
+  CSV dump:         "Download CSV" on Worklist and Mismatches (Excel-ready, UTF-8):
+                    /export/worklist.csv, /export/mismatches.csv
+
+  Future use:       "Mark as future use" on a device card (stored in future.json, git-
+                    ignored) - or "Future Expansion" ticked on the device in Patchmanager.
+                    Its switch ports (via cabling AND port plan) are listed under "To shut",
+                    flagged on the port card and in the worklist, with CSV and Arista EOS
+                    config (text only - the tool never touches a switch). A port where the
+                    documentation names another device is marked "conflict - check first"
+                    and only written as a comment, never as "shutdown".
+
+  Port names are compared tolerantly: MGNT = MGMT, ETH.1 = Ethernet = ENET 1 = LAN,
+  ETH.3 = 03, S5. D1 = S5 / D1, 10G.2 = 10G / 2 / 2. Different numbers stay different.
 
 
 INPUTS (tab "Data & CloudVision", drag & drop - the type is detected from the content)

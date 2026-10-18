@@ -4,3 +4,4 @@ switches.json
 cv_token.txt
 service.log*
 __pycache__/
+future.json
