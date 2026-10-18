@@ -465,7 +465,7 @@ async function copy(text, msg) {
 // ------------------------------------------------------------- Jira links, notes, manual worklist
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 function jiraHtml(text) {
-  const base = (STATUS && STATUS.jira_url || "").replace(/\/+$/, "");
+  const base = (STATUS && STATUS.jira_url || "").replace(/\/+$/, "").replace(/\/browse$/i, "");  // '.../browse/' also fine
   return String(text || "").split(/[\s,;]+/).filter(Boolean).map(t => {
     if (/^https?:\/\//i.test(t)) return `<a class="lnk" href="${esc(t)}" target="_blank" rel="noopener">${esc(t.replace(/^https?:\/\/[^/]+\/(browse\/)?/i, "") || t)} ↗</a>`;
     if (JIRA_KEY.test(t) && base) return `<a class="lnk" href="${esc(base + "/browse/" + t)}" target="_blank" rel="noopener">${esc(t)} ↗</a>`;

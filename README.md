@@ -57,7 +57,6 @@ You need Python 3.8 or newer. Nothing else to install.
 ## Good to know
 
 - Your data stays local. Imports are kept in `data/`, which is never uploaded to git.
-- Jira keys like `PLS-123` become links once `jira_url` is set in `config.json`
-  (e.g. `https://yourcompany.atlassian.net`); full Jira URLs are always clickable.
+- Jira keys like `PLS-123` link to qvest-media.atlassian.net (`jira_url` in the config).
 - CloudVision is optional: put a read-only token in `cv_token.txt` and restart.
 - Details on matching rules, settings and CloudVision: [docs/TECHNICAL.md](docs/TECHNICAL.md)

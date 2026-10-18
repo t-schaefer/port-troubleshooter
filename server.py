@@ -207,10 +207,14 @@ def load_config():
     if not CONFIG_FILE.exists() and CONFIG_EXAMPLE.exists():
         CONFIG_FILE.write_text(CONFIG_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
         log.info("created config.json from config.example.json")
-    try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    # settings missing in config.json (added in a later version) come from config.example.json
+    cfg = {}
+    for f in (CONFIG_EXAMPLE, CONFIG_FILE):
+        try:
+            cfg.update(json.loads(f.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+    return cfg
 
 
 def cv_token():

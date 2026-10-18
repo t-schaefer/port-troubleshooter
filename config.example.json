@@ -2,6 +2,8 @@
   "cv_url": "https://www.cv-prod-uk-1.arista.io",
   "cv_verify_tls": true,
   "event_hours": 72,
-  "import_dirs": ["inbox"],
-  "jira_url": ""
+  "import_dirs": [
+    "inbox"
+  ],
+  "jira_url": "https://qvest-media.atlassian.net"
 }
