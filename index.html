@@ -109,6 +109,8 @@
   .modal .mbox { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 16px 16px; width: min(860px, 100%); }
   .modal .dhead { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; }
   .modal select { max-width: 100%; font-size: 0.82rem; padding: 4px 6px; }
+  .nodata { background: var(--warnbg); border: 1px solid var(--warn); border-radius: 12px; padding: 16px 18px; margin-top: 16px; }
+  .nodata h3 { margin: 0 0 8px; } .nodata ol { margin: 6px 0 10px 18px; padding: 0; } .nodata li { margin: 3px 0; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; z-index: 60; }
   @media print { nav, .searchbar, .hint, .results, .cardhead .tools, header .muted { display: none !important; } body { background: #fff; } .card { border: 0; } }
 </style>
@@ -135,6 +137,7 @@
       <button class="btn primary" type="submit">Search</button>
     </form>
     <p class="hint muted">Any name a device is known by (Patchmanager label, alias, asset tag, description, IP list, snagging list, CloudVision hostname – partial is fine), a switch port ("Ethernet49 on idf2eswcpredg03", "DCB.ESW A01 12") or a cable ID.</p>
+    <div id="nodata" class="hidden"></div>
     <div class="results hidden" id="results"></div>
     <div id="card"></div>
   </section>
@@ -204,10 +207,17 @@
 </main>
 <div class="modal hidden" id="updmodal" role="dialog" aria-label="Update from latest files">
   <div class="mbox">
-    <div class="dhead"><b>Update from latest files</b><button class="btn sm" id="updclose">✕</button></div>
+    <div class="dhead"><b>Update data</b><button class="btn sm" id="updclose">✕</button></div>
+    <label class="drop" id="upddrop" style="margin-top:0">
+      <input type="file" id="updfile" accept=".csv,.xlsx,.xlsm" multiple class="hidden">
+      <b>Upload from this PC:</b> drop the export files here or <span class="lnk">click to choose files</span><br>
+      <span class="muted">Patchmanager cables + equipment (CSV), IP list View (xlsx), snagging list (xlsx) – several at once is fine, the type is detected automatically.</span>
+    </label>
+    <div id="updlog" class="muted" style="margin:6px 0 4px"></div>
+    <h2 style="margin-top:16px">…or take the newest files from the server's import folder</h2>
     <p class="muted" id="upddirs"></p>
     <div class="tablewrap"><table id="updtable"><thead><tr><th></th><th>Input</th><th>Loaded now</th><th>Newest in the folders</th></tr></thead><tbody></tbody></table></div>
-    <p class="muted">Ticked = a newer file was found. Put new exports into one of the folders above (Patchmanager CSVs, IP list View, snagging list) – the type is detected from the content.</p>
+    <p class="muted" id="updhint">Ticked = a newer file was found in the folder. Copy new exports there (e.g. via a share), then Scan again.</p>
     <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center"><span id="updmsg" class="muted"></span><button class="btn" id="updrescan">Scan again</button><button class="btn primary" id="updgo">Import ticked</button></div>
   </div>
 </div>
@@ -280,8 +290,25 @@ window.addEventListener("popstate", route);
 async function loadStatus() {
   try { STATUS = await api("/api/status"); } catch (e) { $("#hdrstatus").textContent = "service not reachable: " + e.message; return; }
   const m = STATUS.store.meta, n = Object.keys(m).length, cv = STATUS.cv;
+  renderNoData(n);
   $("#hdrstatus").innerHTML = `${n}/4 inputs loaded · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
   if (!$("#tab-data").classList.contains("hidden")) renderData();
+}
+
+// ------------------------------------------------------------- empty instance: how to get data in
+async function renderNoData(n) {
+  const box = $("#nodata");
+  if (n >= 4) { box.classList.add("hidden"); return; }
+  let dirs = [];
+  try { dirs = (SRC || await api("/api/sources")).dirs; } catch {}
+  const missing = Object.entries(KINDS).filter(([k]) => !STATUS.store.meta[k]).map(([, l]) => l);
+  box.className = "nodata";
+  box.innerHTML = `<h3>${n ? "Some data is missing" : "No data loaded yet"}</h3>
+    <div class="muted">Missing: ${missing.map(esc).join(", ")}. Your data is not in the git repository (it is project data) – load it once on this server, it is kept in <span class="mono">data\</span> from then on.</div>
+    <ol><li>Click <b>⟳ Update data</b> and upload the exports from your PC: Patchmanager cable export + all-equipment export (CSV), IP list View (xlsx), Connectivity snagging list (xlsx). File names do not matter.</li>
+      <li>Later updates: upload again – or copy new exports into <span class="mono">${dirs.map(esc).join(" / ")}</span> on the server and pick them in the same menu.</li></ol>
+    <button class="btn primary" id="nodataupd">⟳ Update data – upload files</button>`;
+  box.querySelector("#nodataupd").onclick = openUpdate;
 }
 
 // ------------------------------------------------------------- search
@@ -455,9 +482,18 @@ async function openUpdate() {
       <td class="muted">${cur ? esc(cur.file) + "<br>" + esc(cur.loaded.replace("T", " ")) : "not imported"}</td>
       <td>${opts ? `<select data-k="${k}">${opts}</select>` : '<span class="muted">no file found</span>'}</td></tr>`;
   }).join("");
+  const found = Object.values(SRC.kinds).some(k => k.candidates.length);
+  $("#updhint").innerHTML = found ? "Ticked = a newer file was found in the folder. Copy new exports there (e.g. via a share), then Scan again."
+    : "<b>No export files in the import folder.</b> Use the upload above – or copy the files into the folder and click Scan again.";
+  $("#updgo").disabled = !found;
   $("#updmsg").textContent = "";
 }
-$("#updbtn").onclick = openUpdate;
+$("#updbtn").onclick = () => { $("#updlog").innerHTML = ""; openUpdate(); };
+$("#updfile").onchange = async e => { await upload([...e.target.files], $("#updlog")); e.target.value = ""; openUpdate(); };
+const updDrop = $("#upddrop");
+updDrop.ondragover = e => { e.preventDefault(); updDrop.classList.add("over"); };
+updDrop.ondragleave = () => updDrop.classList.remove("over");
+updDrop.ondrop = async e => { e.preventDefault(); updDrop.classList.remove("over"); await upload([...e.dataTransfer.files], $("#updlog")); openUpdate(); };
 $("#updclose").onclick = () => $("#updmodal").classList.add("hidden");
 $("#updmodal").onclick = e => { if (e.target.id === "updmodal") $("#updmodal").classList.add("hidden"); };
 $("#updrescan").onclick = openUpdate;
@@ -643,15 +679,15 @@ async function renderData() {
   $("#cvlocate").classList.toggle("hidden", !cv.enabled);
   const b = $("#cvref"); if (b) b.onclick = async () => { await api("/api/cv/refresh", { method: "POST" }); toast("Refresh requested"); setTimeout(loadStatus, 4000); };
 }
-async function upload(files) {
+async function upload(files, log = $("#importlog")) {
   for (const f of files) {
-    $("#importlog").innerHTML += `<div>${esc(f.name)}: importing…</div>`;
-    const line = $("#importlog").lastElementChild;
+    log.insertAdjacentHTML("beforeend", `<div>${esc(f.name)}: uploading…</div>`);
+    const line = log.lastElementChild;
     try { const r = await api("/api/import?name=" + encodeURIComponent(f.name), { method: "POST", body: await f.arrayBuffer() });
       line.innerHTML = `<span class="okt">${esc(f.name)}: ${esc(KINDS[r.kind])}, ${r.count} rows</span>`; }
     catch (e) { line.innerHTML = `<span class="err">${esc(f.name)}: ${esc(e.message)}</span>`; }
   }
-  await loadStatus(); loadWork();
+  MIS = null; await loadStatus(); loadWork(); loadShutCount();
 }
 $("#file").onchange = e => upload([...e.target.files]);
 const drop = $("#drop");

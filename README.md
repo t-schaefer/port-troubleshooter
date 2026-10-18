@@ -16,9 +16,10 @@ It combines four exports that you load into the tool, plus live data if configur
 | **Connectivity snagging list** (xlsx) | known problems, status, who fixed what |
 | **CloudVision** (optional, live) | current interface errors and link events |
 
-Loading files: click **⟳ Update data** at the top right. It finds the newest exports in
-the import folders and imports them. You can also drag files onto the
-**Data & CloudVision** tab.
+Loading files: click **⟳ Update data** at the top right and upload the exports from your
+PC (several at once, the type is detected automatically). Alternatively copy them into the
+`inbox` folder on the server and pick them in the same menu. Your data is never in git, so a
+new installation starts empty.
 
 ## What you can do
 
