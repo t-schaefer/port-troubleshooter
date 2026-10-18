@@ -37,6 +37,15 @@ everything that is still open.
                     side panel - the list keeps its filter, sort and position (Esc closes).
                     Filters and sort are remembered in the browser and shown above the table.
 
+  Notes & Jira:     comments, Jira links and manual worklist items per port / device in
+                    notes.json (git-ignored, written atomically). Users are free text with a
+                    pick list of names already used (notes + snagging list "name"). Manual
+                    items stay open until "Done" (who + when recorded). config.json
+                    "jira_url" turns keys (ABC-123) into links to <jira_url>/browse/ABC-123.
+  Ports tab:        every switch port (cabled or in the IP list) with device, patch panels,
+                    cables, IP list and status; group by switch / device / patch panel; CSV.
+  Devices tab:      every device / switch / patch panel; click shows all its connections.
+
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
                     Its switch ports (via cabling AND IP list) are listed under "To shut",

@@ -45,6 +45,7 @@ CONFIG_FILE = BASE_DIR / "config.json"
 CONFIG_EXAMPLE = BASE_DIR / "config.example.json"
 SWITCHES_FILE = BASE_DIR / "switches.json"
 FUTURE_FILE = BASE_DIR / "future.json"
+NOTES_FILE = BASE_DIR / "notes.json"
 TOKEN_FILE = BASE_DIR / "cv_token.txt"
 LOG_FILE = BASE_DIR / "service.log"
 MAX_UPLOAD = 60 * 1024 * 1024
@@ -69,6 +70,7 @@ CV_WAKE = threading.Event()
 KIND_NAMES = {"cables": "Patchmanager cables", "equipment": "Patchmanager equipment", "portplan": "IP list",
               "snags": "snagging list"}
 MISMATCH_CACHE = {"key": None, "rows": []}
+PORTS_CACHE = {"key": None, "rows": []}
 
 WORKLIST_COLS = [("source", "Source"), ("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"),
                  ("intf", "Interface"), ("what", "Problem"), ("destination", "Destination"), ("status", "Status"),
@@ -78,6 +80,12 @@ SHUT_COLS = [("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVi
              ("note", "Note")]
 CHAIN_COLS = [("severity", "Severity"), ("fault", "Fault"), ("depth", "Step"), ("from", "From device"),
               ("from_port", "From port"), ("to", "To device"), ("to_port", "To port"), ("cables", "Cables")]
+PORT_COLS = [("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"),
+             ("device", "Device"), ("device_port", "Device port"), ("panels", "Patch panels"), ("cables", "Cables"),
+             ("length", "Length"), ("iplist", "IP list says"), ("status", "Status"), ("snags", "Open snags"),
+             ("future", "Future device")]
+DEVICE_COLS = [("device", "Device"), ("kind", "Type"), ("template", "Template"), ("location", "Location"),
+               ("position", "Position"), ("alias", "Alias"), ("links", "Connections"), ("future", "Future use")]
 MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Switch (Patchmanager)"),
                  ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"), ("source", "Source"), ("says", "Source says"),
                  ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
@@ -92,13 +100,104 @@ def mismatches():
     return MISMATCH_CACHE["rows"]
 
 
+def ports_overview():
+    """All ports (a few seconds) - computed once per data state."""
+    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True),
+           json.dumps(STORE.future, sort_keys=True), CV["events_at"])
+    if PORTS_CACHE["key"] != key:
+        PORTS_CACHE["rows"] = STORE.ports_overview(CV["events"])
+        PORTS_CACHE["key"] = key
+    return PORTS_CACHE["rows"]
+
+
+# ---------------------------------------------------------------- notes, Jira links, manual worklist
+# One list in notes.json (git-ignored): comments and manual worklist items on a port or a
+# device. {id, target: {type: port|device, switch, nums | device}, kind: comment|work,
+#  text, jira, user, created, status (work: open|done), done_by, done_at}
+NOTES_LOCK = threading.Lock()
+JIRA_RE = re.compile(r"^[\w\s#:/.?=&%~\-,;]{0,300}$")
+
+
+def load_notes():
+    try:
+        return json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def save_notes(notes):
+    tmp = NOTES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(notes, indent=1, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(NOTES_FILE)
+
+
+def note_target(t):
+    """Validate a target from the browser -> canonical dict + key, or raise ValueError."""
+    if not isinstance(t, dict):
+        raise ValueError("bad target")
+    if t.get("type") == "port":
+        sw = str(t.get("switch", "")).strip()
+        nums = t.get("nums")
+        if not SWITCH_RE.match(sw) or not isinstance(nums, list) or not 1 <= len(nums) <= 3 or \
+                not all(isinstance(n, int) and 0 <= n < 1000 for n in nums):
+            raise ValueError("bad port")
+        sw = STORE.pm_name(sw) or sw
+        return {"type": "port", "switch": sw, "nums": nums}
+    if t.get("type") == "device":
+        d = str(t.get("device", "")).strip()
+        if not d or len(d) > 120:
+            raise ValueError("bad device")
+        return {"type": "device", "device": d}
+    raise ValueError("bad target")
+
+
+def same_target(a, b):
+    if a.get("type") != b.get("type"):
+        return False
+    if a["type"] == "port":
+        return model.norm_name(a["switch"]) == model.norm_name(b["switch"]) and list(a["nums"]) == list(b["nums"])
+    return model.norm_name(a["device"]) == model.norm_name(b["device"])
+
+
+def known_users():
+    """Names for the user pick list: everyone who wrote a note, plus the snagging list's 'who'."""
+    names = {n.get("user", "").strip() for n in load_notes()} | {n.get("done_by", "").strip() for n in load_notes()}
+    names |= {s.get("who", "").strip() for s in STORE.snags}
+    return sorted((n for n in names if n and len(n) <= 60 and not n.startswith("#") and n != "0"), key=str.lower)
+
+
+def manual_work_items():
+    """Open manual worklist items in the worklist's row format."""
+    out = []
+    for n in load_notes():
+        if n.get("kind") != "work" or n.get("status") == "done":
+            continue
+        t = n["target"]
+        if t["type"] == "port":
+            pm = t["switch"]
+            out.append({"source": "manual", "switch": pm, "cv_switch": STORE.cv_name(pm) or "", "nums": t["nums"],
+                        "intf": model.intf_name(t["nums"]), "device": "", "what": n.get("text", ""),
+                        "destination": "", "status": "open (manual)", "since": n.get("created", "")[:16].replace("T", " "),
+                        "who": n.get("user", ""), "jira": n.get("jira", ""), "nr": "", "note_id": n["id"], "future": ""})
+        else:
+            out.append({"source": "manual", "switch": "", "cv_switch": "", "nums": [], "intf": "", "device": t["device"],
+                        "what": n.get("text", ""), "destination": t["device"], "status": "open (manual)",
+                        "since": n.get("created", "")[:16].replace("T", " "), "who": n.get("user", ""),
+                        "jira": n.get("jira", ""), "nr": "", "note_id": n["id"], "future": ""})
+    return out
+
+
+def worklist():
+    return manual_work_items() + STORE.worklist(CV["events"])
+
+
 def to_csv(rows, cols):
     """Excel-friendly CSV: UTF-8 with BOM, one header row."""
     f = io.StringIO()
     w = csv.writer(f)
     w.writerow([h for _, h in cols])
     for r in rows:
-        w.writerow([r.get(k, "") for k, _ in cols])
+        w.writerow([" + ".join(map(str, r.get(k))) if isinstance(r.get(k), list) else r.get(k, "") for k, _ in cols])
     return ("\ufeff" + f.getvalue()).encode("utf-8")
 
 
@@ -311,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(PAGE_FILE.read_bytes(), "text/html; charset=utf-8")
             elif u.path == "/api/status":
                 with LOCK:
-                    self._json({"store": STORE.status(), "cv": cv_public()})
+                    self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": load_config().get("jira_url", "")})
             elif u.path == "/api/search":
                 with LOCK:
                     self._json({"results": STORE.search(q.get("q", "")[:200])})
@@ -338,6 +437,19 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/mismatches":
                 with LOCK:
                     self._json({"items": mismatches()})
+            elif u.path == "/api/ports":
+                with LOCK:
+                    self._json({"items": ports_overview()})
+            elif u.path == "/api/devices":
+                with LOCK:
+                    self._json({"items": STORE.devices_overview()})
+            elif u.path == "/api/notes":
+                try:
+                    tgt = note_target(json.loads(q.get("target", "{}")))
+                except ValueError as e:
+                    return self._err(str(e))
+                notes = [n for n in load_notes() if same_target(n["target"], tgt)]
+                self._json({"notes": sorted(notes, key=lambda n: n.get("created", ""), reverse=True), "users": known_users()})
             elif u.path == "/api/sources":
                 self._json(scan_sources())
             elif u.path == "/api/chain":
@@ -351,16 +463,20 @@ class Handler(BaseHTTPRequestHandler):
                     rows = STORE.ports_to_shut()
                     self._json({"devices": STORE.future_devices(), "ports": rows, "eos": model.eos_shutdown(rows)})
             elif u.path in ("/export/worklist.csv", "/export/mismatches.csv", "/export/shut.csv", "/export/shut-eos.txt",
-                            "/export/chain.csv"):
+                            "/export/chain.csv", "/export/ports.csv", "/export/devices.csv"):
                 ctype, ext = "text/csv; charset=utf-8", "csv"
                 with LOCK:
-                    if u.path == "/export/chain.csv":
+                    if u.path == "/export/ports.csv":
+                        body, name = to_csv(ports_overview(), PORT_COLS), "ports"
+                    elif u.path == "/export/devices.csv":
+                        body, name = to_csv(STORE.devices_overview(), DEVICE_COLS), "devices"
+                    elif u.path == "/export/chain.csv":
                         dev = q.get("device", "").strip()[:120]
                         ch = STORE.signal_chain(dev, CV["events"])
                         body = to_csv(ch["faults"], CHAIN_COLS)
                         name = "chain-" + re.sub(r"[^\w.\-]+", "_", ch["root"])
                     elif u.path == "/export/worklist.csv":
-                        body, name = to_csv(STORE.worklist(CV["events"]), WORKLIST_COLS), "worklist"
+                        body, name = to_csv(worklist(), WORKLIST_COLS), "worklist"
                     elif u.path == "/export/mismatches.csv":
                         body, name = to_csv(mismatches(), MISMATCH_COLS), "mismatches"
                     elif u.path == "/export/shut.csv":
@@ -377,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             elif u.path == "/api/worklist":
                 with LOCK:
-                    self._json({"items": STORE.worklist(CV["events"])})
+                    self._json({"items": worklist()})
             elif u.path == "/api/switches":
                 with LOCK:
                     cvhosts = {d["hostname"].upper() for d in CV["devices"]}
@@ -484,6 +600,52 @@ class Handler(BaseHTTPRequestHandler):
                     FUTURE_FILE.write_text(json.dumps(fut, indent=2, sort_keys=True), encoding="utf-8")
                     STORE.set_future(fut)
                 log.info("FUTURE %s %s %s", "set" if data.get("future") else "cleared", dev, note)
+                self._json({"ok": True})
+            elif u.path == "/api/notes":
+                data = json.loads(body or b"{}")
+                action = data.get("action", "add")
+                with NOTES_LOCK:
+                    notes = load_notes()
+                    if action == "add":
+                        try:
+                            tgt = note_target(data.get("target"))
+                        except ValueError as e:
+                            return self._err(str(e))
+                        kind = "work" if data.get("kind") == "work" else "comment"
+                        text = str(data.get("text", "")).strip()[:2000]
+                        jira = str(data.get("jira", "")).strip()[:300]
+                        user = str(data.get("user", "")).strip()[:60]
+                        if not user:
+                            return self._err("enter your name")
+                        if not text and not jira:
+                            return self._err("enter a comment or a Jira link")
+                        if jira and not JIRA_RE.match(jira):
+                            return self._err("Jira: a key (ABC-123) or a link")
+                        n = {"id": hashlib.sha1(("%s%s%s" % (time.time(), user, text)).encode()).hexdigest()[:12],
+                             "target": tgt, "kind": kind, "text": text, "jira": jira, "user": user,
+                             "created": datetime.now().isoformat(timespec="seconds")}
+                        if kind == "work":
+                            n["status"] = "open"
+                        notes.append(n)
+                        log.info("NOTE %s by %s on %s: %s %s", kind, user, json.dumps(tgt), text[:80], jira)
+                    elif action in ("done", "reopen", "delete"):
+                        nid = str(data.get("id", ""))
+                        user = str(data.get("user", "")).strip()[:60]
+                        hit = next((n for n in notes if n["id"] == nid), None)
+                        if not hit:
+                            return self._err("note not found")
+                        if action == "delete":
+                            notes.remove(hit)
+                        elif action == "done":
+                            if not user:
+                                return self._err("enter your name")
+                            hit.update(status="done", done_by=user, done_at=datetime.now().isoformat(timespec="seconds"))
+                        else:
+                            hit.update(status="open", done_by="", done_at="")
+                        log.info("NOTE %s %s by %s", action, nid, user or "-")
+                    else:
+                        return self._err("unknown action")
+                    save_notes(notes)
                 self._json({"ok": True})
             elif u.path == "/api/cv/refresh":
                 CV_WAKE.set()

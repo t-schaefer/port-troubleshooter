@@ -6,3 +6,5 @@ service.log*
 __pycache__/
 future.json
 inbox/
+notes.json
+notes.tmp

@@ -664,6 +664,9 @@ class Store:
                 idx[k].setdefault(device, (name, via))
 
         self.switch_set = {norm_name(k) for k in self.mapping} | {norm_name(p["switch"]) for p in self.plan}
+        self.switch_names = {norm_name(k): k for k in self.mapping}
+        for p in self.plan:
+            self.switch_names.setdefault(norm_name(p["switch"]), p["switch"])
         if self.equipment:
             for items in self.equipment.by_label.values():
                 for e in items:
@@ -673,6 +676,7 @@ class Store:
                         add(e["description"], top, "Patchmanager description")
                         if re.match(r"^Arista (CCS|DCS)-", e["template"]):
                             self.switch_set.add(norm_name(top))
+                            self.switch_names.setdefault(norm_name(top), top)
                     elif re.search(r"[A-Za-z]", e["label"]) and len(e["label"]) > 4 and "." in e["label"]:
                         add(e["label"], top, "Patchmanager (part of %s)" % top)   # 'DCB.ICM 02' inside a frame
                     add(e["alias"], top, "Patchmanager alias")
@@ -1306,6 +1310,97 @@ class Store:
                 out.append(("error", "Two cables documented on %s %s" % (pc["switch"], pc["intf"])))
         if link.get("future"):
             out.append(("info", "%s is marked future use" % link["to"]))
+        return out
+
+    # -- overviews ------------------------------------------------------------------------
+    def ports_overview(self, cv_events=None):
+        """One row per switch port (and per cable if a port has two), plus IP-list ports
+        without a documented cable: switch, port, device, device port, patch panels on the
+        path, cables, what the IP list says, status."""
+        rows, covered = [], set()
+        names = getattr(self, "switch_names", {})
+        for nsw in sorted(getattr(self, "switch_set", set())):
+            sw = names.get(nsw) or self.pm_name(nsw) or nsw
+            ports = self.cabling.ports_of(sw) if self.cabling else []
+            for nums, _ in ports:
+                card = self.port_card(sw, nums, cv_events)
+                covered.add((nsw, tuple(nums)))
+                rows += self._overview_rows(card)
+        for p in self.plan:
+            if p["free"]:
+                continue
+            nsw = norm_name(p["switch"])
+            nums = tuple(p["nums"])
+            if len(nums) == 2 and nums[0] == 1 and not (self.cabling and self.cabling.is_modular(p["switch"])):
+                nums = nums[1:]
+            if (nsw, nums) in covered:
+                continue
+            covered.add((nsw, nums))
+            rows += self._overview_rows(self.port_card(p["switch"], nums, cv_events))
+        return rows
+
+    def _overview_rows(self, card):
+        live = [p for p in card["plan"] if not p["free"]]
+        plan = ("%s %s" % (live[0].get("_dev") or live[0]["equipment"], live[0].get("_devport") or live[0]["eqport"])).strip() if live else ""
+        verdicts = {r["verdict"] for r in card["compare"]}
+        status = ("mismatch" if "device" in verdicts else "check" if "trunk" in verdicts else
+                  "port differs" if "port" in verdicts else "")
+        open_snags = sum(1 for s in card["snags"] if s["open"])
+        base = {"switch": card["switch"], "cv_switch": card["cv_switch"], "nums": card["nums"], "intf": card["intf"],
+                "iplist": plan, "snags": open_snags, "events": len(card["events"]),
+                "future": (card.get("shut") or {}).get("device", "")}
+        if not card["paths"]:
+            return [dict(base, device="", device_port="", panels=[], cables=[], length="",
+                         status=status or ("no cable" if self.cabling else ""))]
+        out = []
+        for p in card["paths"]:
+            ends = [h for h in p["hops"] if h["type"] == "end" and not h.get("missing")]
+            far = ends[-1] if len(ends) > 1 else None
+            panels = []
+            for h in ends[1:]:
+                if is_passive(h) and h.get("top") and h.get("top") not in panels:
+                    panels.append(h["top"])
+            cables = [h for h in p["hops"] if h["type"] == "cable"]
+            total = 0.0
+            for h in cables:
+                m = re.match(r"([\d.]+)\s*m", h.get("length") or "")
+                total += float(m.group(1)) if m else 0
+            dev = far.get("top", "") if far and not is_passive(far) else ""
+            st = status or ("ends at panel" if p["status"] == "open" else p["status"] if p["status"] != "complete" else "ok")
+            out.append(dict(base, device=dev, device_port=end_port(far) if dev else "", panels=panels,
+                            cables=[h.get("id") or "?" for h in cables], length=("%.1f m" % total) if total else "",
+                            status=st, end=(far or {}).get("name", "") if not dev else ""))
+        if len(out) > 1:
+            for r in out:
+                r["status"] = "two cables"
+        return out
+
+    def devices_overview(self):
+        """Every device, switch and patch panel: name, type, template, location, connections."""
+        seen = {}
+        if self.equipment:
+            for items in self.equipment.by_label.values():
+                for e in items:
+                    if e["label"] == e["top"]:
+                        seen.setdefault(norm_name(e["label"]), {"device": e["label"], "template": e["template"],
+                                                                "location": e["location"], "position": e["position"],
+                                                                "alias": e["alias"]})
+        if self.cabling:
+            for key, ends in self.cabling.by_top.items():
+                c, sd = ends[0]
+                end = getattr(c, sd)
+                d = seen.setdefault(key, {"device": end.top, "template": end.template, "location": " > ".join(
+                    x for x in (end.location, end.cabinet) if x), "position": "", "alias": ""})
+                d["links"] = len(ends)
+        fut = {norm_name(k) for k in self.future_devices()}
+        out = []
+        for key, d in seen.items():
+            if not d["device"]:
+                continue
+            kind = "switch" if self.is_switch(d["device"]) else \
+                "patch panel" if is_passive({"top": d["device"], "template": d["template"]}) else "device"
+            out.append(dict(d, kind=kind, links=d.get("links", 0), future=key in fut))
+        out.sort(key=lambda d: norm_name(d["device"]))
         return out
 
     def mismatches(self):

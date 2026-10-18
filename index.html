@@ -99,6 +99,20 @@
   .fsum { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.85rem; margin: -2px 0 10px; color: var(--muted); }
   .fsum b { color: var(--text); } .fsum .btn { padding: 1px 9px; font-size: 0.78rem; }
   tr.sel td { background: var(--infobg) !important; box-shadow: inset 3px 0 0 var(--accent); }
+  .notes { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 6px; }
+  .notes li { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--card); font-size: 0.88rem; }
+  .notes li.open { border-left: 4px solid var(--warn); } .notes li.done { opacity: .7; border-left: 4px solid var(--ok); }
+  .notes .nh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .notes .nh .btn:last-child { margin-left: auto; }
+  .noteform { display: grid; gap: 6px; background: var(--hl); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .noteform .nrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .noteform textarea { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
+  .src.manual { background: var(--okbg); color: var(--ok); }
+  tr.grp td { background: var(--hl); font-weight: 600; border-top: 2px solid var(--line); cursor: default; }
+  tr.grp td .muted { font-weight: 400; }
+  .pnl { display: inline-block; margin: 0 4px 2px 0; }
+  .st { font-size: 0.72rem; padding: 0 7px; border-radius: 8px; white-space: nowrap; background: var(--line); }
+  .st.ok { background: var(--okbg); color: var(--ok); } .st.mismatch, .st.twocables { background: var(--badbg); color: var(--bad); }
+  .st.nocable, .st.endsatpanel, .st.portdiffers, .st.check, .st.ambiguous { background: var(--warnbg); color: var(--warn); }
   .chain { list-style: none; margin: 0; padding: 0; }
   .chain li { padding: 6px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
   .chain li.bad { background: var(--badbg); } .chain li.warn { background: var(--warnbg); }
@@ -126,6 +140,8 @@
     <button data-tab="port" class="on">Troubleshoot</button>
     <button data-tab="work">Worklist <span class="count" id="workcount">–</span></button>
     <button data-tab="mis">Mismatches <span class="count" id="miscount">–</span></button>
+    <button data-tab="ports">Ports <span class="count" id="portcount">–</span></button>
+    <button data-tab="devs">Devices</button>
     <button data-tab="shut">To shut <span class="count" id="shutcount">–</span></button>
     <button data-tab="switches">Switches</button>
     <button data-tab="data">Data &amp; CloudVision</button>
@@ -145,7 +161,7 @@
   <section id="tab-work" class="hidden">
     <div class="filters">
       <input type="search" id="wq" placeholder="Filter (switch, error, destination, who…)" style="flex:1;min-width:220px">
-      <select id="wsrc"><option value="">All sources</option><option value="snag">Snagging list</option><option value="cloudvision">CloudVision only</option></select>
+      <select id="wsrc"><option value="">All sources</option><option value="snag">Snagging list</option><option value="cloudvision">CloudVision only</option><option value="manual">Added here (manual)</option></select>
       <a class="btn" href="/export/worklist.csv">Download CSV</a>
     </div>
     <div class="chips" id="wchips"></div>
@@ -169,6 +185,33 @@
       <thead><tr><th>Switch port</th><th>Mismatch</th><th>Source says</th><th>Compared with</th><th>Detail</th></tr></thead>
       <tbody></tbody></table></div>
     <p class="muted" id="mfoot"></p>
+  </section>
+
+  <section id="tab-ports" class="hidden">
+    <div class="filters">
+      <label class="muted">Group by <select id="pgroup"><option value="switch">Switch</option><option value="device">Device</option><option value="panel">Patch panel</option></select></label>
+      <input type="search" id="pq" placeholder="Filter (switch, device, panel, cable, IP list…)" style="flex:1;min-width:220px">
+      <a class="btn" href="/export/ports.csv">Download CSV</a>
+    </div>
+    <div class="chips" id="pchips"></div>
+    <div class="fsum" id="psum"></div>
+    <div class="tablewrap"><table id="ptable">
+      <thead><tr><th>Switch</th><th>Port</th><th>Device</th><th>Device port</th><th>Patch panels</th><th>Cables</th><th>IP list says</th><th>Status</th></tr></thead>
+      <tbody></tbody></table></div>
+    <p class="muted" id="pfoot"></p>
+  </section>
+
+  <section id="tab-devs" class="hidden">
+    <div class="filters">
+      <input type="search" id="dq" placeholder="Filter (name, alias, template, location…)" style="flex:1;min-width:220px">
+      <a class="btn" href="/export/devices.csv">Download CSV</a>
+    </div>
+    <div class="chips" id="dchips"></div>
+    <div class="fsum" id="dsum"></div>
+    <div class="tablewrap"><table id="dtable">
+      <thead><tr><th>Name</th><th>Type</th><th>Template</th><th>Location</th><th>Connections</th></tr></thead>
+      <tbody></tbody></table></div>
+    <p class="muted" id="dfoot"></p>
   </section>
 
   <section id="tab-shut" class="hidden">
@@ -239,7 +282,7 @@ let STATUS = null, WORK = [], CURRENT = null;
 // Port / device / cable / chain views open on the Troubleshoot tab - or, when you are in a
 // list (Worklist, Mismatches, To shut, ...), in a side panel so the list keeps its place.
 let CURTAB = "port", DETAIL = "";
-const LIST_TABS = ["work", "mis", "shut", "switches", "data"];
+const LIST_TABS = ["work", "mis", "ports", "devs", "shut", "switches", "data"];
 function out() {
   if (CURTAB === "port") return $("#card");
   $("#drawer").classList.add("open");
@@ -266,7 +309,7 @@ function showTab(t) {
   if (t === "port") $("#drawer").classList.remove("open");
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + t));
-  if (t === "work") loadWork(); if (t === "mis") loadMis(); if (t === "shut") loadShut(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
+  if (t === "work") loadWork(); if (t === "mis") loadMis(); if (t === "shut") loadShut(); if (t === "ports") loadPorts(); if (t === "devs") loadDevs(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
   $("#drawer").classList.remove("open"); showTab(b.dataset.tab); history.replaceState(null, "", "#" + b.dataset.tab); });
@@ -343,7 +386,7 @@ function renderPort(c) {
   const plan = c.plan.map(p => `<tr><td>${esc(p.device) || '<span class="muted">free</span>'}</td><td>${esc(p.vlan)}</td><td>${esc(p.cable)}</td><td class="muted">${esc(p.sheet)} r${p.row}</td></tr>`).join("");
   const snags = c.snags.map(s => `<tr><td>${esc(s.nr)}</td><td>${esc(s.first)}</td><td>${esc(s.error || s.error_type)}${s.comment ? '<br><span class="muted">' + esc(s.comment) + '</span>' : ""}</td>
      <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td>
-     <td>${esc(s.action)}${s.fixed ? '<br><span class="muted">' + esc(s.fixed) + '</span>' : ""}</td><td>${esc(s.who)}${s.jira ? "<br>" + esc(s.jira) : ""}</td></tr>`).join("");
+     <td>${esc(s.action)}${s.fixed ? '<br><span class="muted">' + esc(s.fixed) + '</span>' : ""}</td><td>${esc(s.who)}${s.jira ? "<br>" + jiraHtml(s.jira) : ""}</td></tr>`).join("");
   const cvOn = STATUS && STATUS.cv.enabled;
   const ev = c.events.map(e => `<tr><td class="mono">${esc((e.time || "").replace("T", " ").slice(0, 19))}</td><td>${esc(e.severity)}</td><td>${esc(e.title)}<br><span class="muted">${esc(e.description)}</span></td><td>${e.open ? '<span class="tag bad">open</span>' : '<span class="tag">closed</span>'}</td></tr>`).join("");
   const box = out();
@@ -352,6 +395,7 @@ function renderPort(c) {
       <div><h3>${esc(c.switch)} · ${esc(c.intf)}</h3>
         <div class="muted">CloudVision: <span class="mono">${esc(c.cv_switch || "–")} ${esc(c.intf)}</span>${eq ? " · " + esc(eq.template) + " · " + esc(eq.location) + (eq.position ? " · " + esc(eq.position) : "") : ""}</div></div>
       <div class="tools"><button class="btn sm" id="prev">◀ port</button><button class="btn sm" id="next">port ▶</button>
+        <button class="btn sm primary" data-addwork>+ Add to worklist</button>
         <button class="btn sm" id="copy">Copy job card</button><button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div>
     </div>
     <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul>
@@ -366,8 +410,10 @@ function renderPort(c) {
       </div>
     </div>
     <h2>Snagging list <span class="muted">(${c.snags.length})</span></h2>
-    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>First seen</th><th>Problem</th><th>Status</th><th>Done</th><th>Who</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries for this port.</p>'}
+    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>First seen</th><th>Problem</th><th>Status</th><th>Done</th><th>Who / Jira</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries for this port.</p>'}
+    <div data-notes></div>
   </div>`;
+  notesSection(box, { type: "port", switch: c.switch, nums: c.nums });
   box.querySelector("#prev").onclick = () => stepPort(-1); box.querySelector("#next").onclick = () => stepPort(1);
   box.querySelector("#copy").onclick = () => copy(jobCard(c), "Job card copied");
   box.querySelector("#link").onclick = () => copy(shareLink("port=" + c.switch + "|" + c.intf), "Link copied");
@@ -416,6 +462,61 @@ async function copy(text, msg) {
   catch { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast(msg); }
 }
 
+// ------------------------------------------------------------- Jira links, notes, manual worklist
+const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+function jiraHtml(text) {
+  const base = (STATUS && STATUS.jira_url || "").replace(/\/+$/, "");
+  return String(text || "").split(/[\s,;]+/).filter(Boolean).map(t => {
+    if (/^https?:\/\//i.test(t)) return `<a class="lnk" href="${esc(t)}" target="_blank" rel="noopener">${esc(t.replace(/^https?:\/\/[^/]+\/(browse\/)?/i, "") || t)} ↗</a>`;
+    if (JIRA_KEY.test(t) && base) return `<a class="lnk" href="${esc(base + "/browse/" + t)}" target="_blank" rel="noopener">${esc(t)} ↗</a>`;
+    return esc(t);
+  }).join(" ");
+}
+const lastUser = () => store.get("user", "");
+async function askUser(msg) {
+  const u = (prompt(msg, lastUser()) || "").trim(); if (u) store.set("user", u); return u;
+}
+async function notesSection(box, target) {
+  const el = box.querySelector("[data-notes]"); if (!el) return;
+  let data; try { data = await api("/api/notes?target=" + encodeURIComponent(JSON.stringify(target))); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const work = data.notes.filter(n => n.kind === "work"), com = data.notes.filter(n => n.kind !== "work");
+  const item = n => `<li class="note ${n.kind === "work" ? (n.status === "done" ? "done" : "open") : ""}">
+      <div class="nh"><b>${esc(n.user)}</b> <span class="muted">${esc(n.created.replace("T", " ").slice(0, 16))}</span>
+        ${n.kind === "work" ? (n.status === "done" ? `<span class="tag ok">done ${esc(n.done_by || "")}</span> <button class="btn sm" data-act="reopen" data-id="${n.id}">Reopen</button>`
+          : `<span class="tag warn">on worklist</span> <button class="btn sm" data-act="done" data-id="${n.id}">Done</button>`) : ""}
+        <button class="btn sm" data-act="delete" data-id="${n.id}" title="Delete">✕</button></div>
+      ${n.text ? `<div>${esc(n.text)}</div>` : ""}${n.jira ? `<div>Jira: ${jiraHtml(n.jira)}</div>` : ""}</li>`;
+  const users = data.users.map(u => `<option value="${esc(u)}">`).join("");
+  el.innerHTML = `<h2>Notes &amp; Jira <span class="muted">(${data.notes.length})</span></h2>
+    ${data.notes.length ? `<ul class="notes">${[...work, ...com].map(item).join("")}</ul>` : '<p class="empty">No notes yet.</p>'}
+    <form class="noteform" autocomplete="off">
+      <div class="nrow"><input type="text" name="user" list="ulist-${el.dataset.n = Math.random().toString(36).slice(2)}" placeholder="Your name (type or pick)" value="${esc(lastUser())}" required style="max-width:220px">
+        <datalist id="ulist-${el.dataset.n}">${users}</datalist>
+        <input type="text" name="jira" placeholder="Jira key or link (optional), e.g. PLS-123" style="flex:1;min-width:200px"></div>
+      <textarea name="text" rows="2" placeholder="Comment – what was checked, what was done, what is next"></textarea>
+      <div class="nrow"><label class="muted"><input type="checkbox" name="work"> also put it on the worklist (stays open until marked done)</label>
+        <span style="flex:1"></span><span class="err" data-msg></span><button class="btn primary" type="submit">Add note</button></div>
+    </form>`;
+  const form = el.querySelector("form");
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const f = new FormData(form), user = (f.get("user") || "").trim();
+    store.set("user", user);
+    try {
+      await api("/api/notes", { method: "POST", body: JSON.stringify({ action: "add", target, user, text: f.get("text"), jira: f.get("jira"), kind: f.get("work") ? "work" : "comment" }) });
+      toast(f.get("work") ? "Added to the worklist" : "Note added"); notesSection(box, target); loadWork();
+    } catch (err) { form.querySelector("[data-msg]").textContent = err.message; }
+  };
+  el.querySelectorAll("button[data-act]").forEach(b => b.onclick = async () => {
+    const act = b.dataset.act; let user = lastUser();
+    if (act === "delete" && !confirm("Delete this note?")) return;
+    if (act === "done") { user = await askUser("Mark as done – your name:"); if (!user) return; }
+    try { await api("/api/notes", { method: "POST", body: JSON.stringify({ action: act, id: b.dataset.id, user }) }); notesSection(box, target); loadWork(); } catch (err) { toast(err.message); }
+  });
+  const add = box.querySelector("[data-addwork]");
+  if (add) add.onclick = () => { form.work.checked = true; form.text.focus(); form.scrollIntoView({ behavior: "smooth", block: "center" }); form.text.placeholder = "What is the problem? It goes on the worklist until someone marks it done."; };
+}
+
 // ------------------------------------------------------------- device card
 async function openDevice(name) {
   setHash("device=" + name); $("#dtitle").textContent = name;
@@ -429,7 +530,7 @@ async function openDevice(name) {
       <td>${st[c.status] || ""}</td><td>${portLink(c.switch_link)}</td></tr>`).join("");
   const plan = d.plan.map(p => `<tr><td>${portLink({ switch: p.switch, nums: p.nums })}</td><td>${esc(p.device)}</td><td>${esc(p.vlan)}</td><td class="muted">${esc(p.sheet)} r${p.row}</td></tr>`).join("");
   const snags = d.snags.map(s => `<tr><td>${esc(s.nr)}</td><td>${s.nums.length ? portLink({ switch: s.pm_switch || s.cv_switch, nums: s.nums }) : esc(s.cv_port)}</td><td>${esc(s.error || s.error_type)}</td>
-      <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td><td>${esc(s.first)}</td></tr>`).join("");
+      <td>${s.open ? '<span class="tag warn">' + esc(s.status || "open") + '</span>' : '<span class="tag ok">' + esc(s.status) + '</span>'}</td><td>${esc(s.first)}</td><td>${esc(s.who)}${s.jira ? "<br>" + jiraHtml(s.jira) : ""}</td></tr>`).join("");
   box.innerHTML = `<div class="card">
     ${d.future ? `<ul class="checks"><li class="bad">FUTURE USE (${esc(d.future.source)}${d.future.note ? ": " + esc(d.future.note) : ""}) – its switch ports should be shut. See “To shut”.</li></ul>` : ""}
     <div class="cardhead"><div><h3>${esc(d.device)}${d.is_switch ? ' <span class="tag">switch</span>' : ""}${d.future ? ' <span class="tag bad">future use</span>' : ""}</h3>
@@ -438,6 +539,7 @@ async function openDevice(name) {
       <div class="tools">${d.is_switch ? "" : d.future && d.future.source !== "marked here" ? "" :
         `<button class="btn sm ${d.future ? "" : "warn"}" id="futbtn">${d.future ? "Clear future use" : "Mark as future use"}</button>`}
         <a class="btn sm primary" href="#chain=${encodeURIComponent(d.device)}">Signal chain</a>
+        <button class="btn sm primary" data-addwork>+ Add to worklist</button>
         <button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div></div>
     ${d.compare && d.compare.length ? `<h2>IP list vs. cabling <span class="muted">(${d.compare.filter(r => r.verdict !== "ok").length} differences)</span></h2>
       <div class="tablewrap"><table><thead><tr><th>Device port</th><th>IP list says</th><th>Patchmanager cabling</th><th></th></tr></thead><tbody>${d.compare.map(r => `<tr class="v-${r.verdict.replace(/ /g, "")}">
@@ -448,8 +550,10 @@ async function openDevice(name) {
     <h2>IP list <span class="muted">(${d.plan.length})</span></h2>
     ${plan ? `<div class="tablewrap"><table><thead><tr><th>Switch port</th><th>Device</th><th>VLAN</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : '<p class="empty">Not in the IP list.</p>'}
     <h2>Snagging list <span class="muted">(${d.snags.length})</span></h2>
-    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
+    ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th><th>Who / Jira</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
+    <div data-notes></div>
   </div>`;
+  notesSection(box, { type: "device", device: d.device });
   box.querySelector("#link").onclick = () => copy(shareLink("device=" + d.device), "Link copied");
   const fb = box.querySelector("#futbtn");
   if (fb) fb.onclick = async () => {
@@ -504,7 +608,7 @@ $("#updgo").onclick = async () => {
   try {
     const r = await api("/api/import-latest", { method: "POST", body: JSON.stringify({ ids }) });
     toast("Imported: " + r.imported.map(x => KINDS[x.kind] + " (" + x.count + ")").join(", "));
-    MIS = null; await loadStatus(); loadWork(); loadShutCount(); openUpdate();
+    MIS = null; PORTS = null; DEVS = null; await loadStatus(); loadWork(); loadShutCount(); openUpdate();
     if (CURTAB === "mis") loadMis();
   } catch (e) { $("#updmsg").textContent = e.message; }
 };
@@ -586,15 +690,20 @@ function renderWork() {
     .map(([s, l]) => `<button class="chip ${s === wstatus ? "on" : ""}" data-s="${esc(s)}">${esc(l)}</button>`).join("");
   $("#wchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { wstatus = b.dataset.s; store.set("wstatus", wstatus); renderWork(); });
   let rows = WORK.filter(w => (!src || w.source === src) && (!wstatus || w.status === wstatus) &&
-    (!q || [w.switch, w.cv_switch, w.intf, w.what, w.destination, w.who, w.jira, w.nr].join(" ").toLowerCase().includes(q)));
+    (!q || [w.switch, w.device, w.cv_switch, w.intf, w.what, w.destination, w.who, w.jira, w.nr].join(" ").toLowerCase().includes(q)));
   rows.sort((a, b) => String(a[wsort.k] ?? "").localeCompare(String(b[wsort.k] ?? ""), undefined, { numeric: true }) * wsort.d);
-  $("#wtable tbody").innerHTML = rows.map((w, i) => `<tr class="click" data-i="${WORK.indexOf(w)}"><td><b>${esc(w.switch)}</b><br><span class="muted mono">${esc(w.cv_switch)}</span></td>
-    <td class="mono">${esc(w.intf)}</td><td>${esc(w.what)} <span class="src ${w.source}">${w.source === "snag" ? "#" + esc(w.nr) : "CV"}</span></td>
-    <td>${esc(w.destination)}</td><td>${esc(w.status)}${w.future ? '<br><span class="tag bad" title="' + esc(w.future) + ' is marked future use">future – shut port</span>' : ""}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + esc(w.jira) : ""}</td></tr>`).join("")
+  $("#wtable tbody").innerHTML = rows.map((w, i) => `<tr class="click" data-i="${WORK.indexOf(w)}"><td><b>${esc(w.switch || w.device)}</b><br><span class="muted mono">${esc(w.cv_switch)}</span></td>
+    <td class="mono">${esc(w.intf)}</td><td>${esc(w.what)} <span class="src ${w.source}">${w.source === "snag" ? "#" + esc(w.nr) : w.source === "manual" ? "manual" : "CV"}</span>${w.note_id ? ` <button class="btn sm" data-done="${esc(w.note_id)}">Done</button>` : ""}</td>
+    <td>${esc(w.destination)}</td><td>${esc(w.status)}${w.future ? '<br><span class="tag bad" title="' + esc(w.future) + ' is marked future use">future – shut port</span>' : ""}</td><td class="muted">${esc(w.since)}</td><td>${esc(w.who)}${w.jira ? "<br>" + jiraHtml(w.jira) : ""}</td></tr>`).join("")
     || `<tr><td colspan="7" class="empty">Nothing open${WORK.length ? " for this filter" : " – import the snagging list or configure CloudVision"}.</td></tr>`;
-  $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const w = WORK[+tr.dataset.i];
+  $("#wtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = e => { const w = WORK[+tr.dataset.i];
+    if (e.target.closest("a, button")) return;
+    if (w.device && !w.nums.length) { selectRow(tr); return openDevice(w.device); }
     if (!w.nums.length) return toast("No interface in this entry");
     selectRow(tr); openPort(w.switch, intf(w.nums)); });
+  $("#wtable tbody").querySelectorAll("button[data-done]").forEach(b => b.onclick = async () => {
+    const user = await askUser("Mark as done – your name:"); if (!user) return;
+    try { await api("/api/notes", { method: "POST", body: JSON.stringify({ action: "done", id: b.dataset.done, user }) }); toast("Marked done"); loadWork(); } catch (err) { toast(err.message); } });
   document.querySelectorAll("#wtable th.sort").forEach(th => { th.classList.toggle("asc", th.dataset.k === wsort.k && wsort.d > 0); th.classList.toggle("desc", th.dataset.k === wsort.k && wsort.d < 0); });
   const active = [wstatus && "status <b>" + esc(wstatus) + "</b>", src && "source <b>" + esc($("#wsrc").selectedOptions[0].text) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
   const sortName = document.querySelector(`#wtable th[data-k="${wsort.k}"]`)?.textContent || wsort.k;
@@ -609,6 +718,84 @@ $("#wq").oninput = () => { store.set("wq", $("#wq").value); renderWork(); }; $("
 function selectRow(tr) { const t = tr.closest("table"); t.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel"); t.dataset.sel = tr.dataset.i; }
 function reselect(sel) { const t = $(sel), i = t.dataset.sel; if (i !== undefined && $("#drawer").classList.contains("open")) t.querySelector(`tr[data-i="${i}"]`)?.classList.add("sel"); }
 document.querySelectorAll("#wtable th.sort").forEach(th => th.onclick = () => { wsort = { k: th.dataset.k, d: wsort.k === th.dataset.k ? -wsort.d : 1 }; store.set("wsort", wsort); renderWork(); });
+
+// ------------------------------------------------------------- ports overview
+let PORTS = null, pstat = store.get("pstat", ""), pgroup = store.get("pgroup", "switch");
+const devA = n => n ? `<a class="dev" href="#device=${encodeURIComponent(n)}" onclick="event.stopPropagation()">${esc(n)}</a>` : "";
+async function loadPorts() {
+  $("#pgroup").value = pgroup;
+  if (!PORTS) $("#pfoot").textContent = "reading all ports…";
+  try { PORTS = (await api("/api/ports")).items; } catch (e) { $("#pfoot").textContent = e.message; return; }
+  $("#portcount").textContent = PORTS.length; renderPorts();
+}
+function renderPorts() {
+  const q = $("#pq").value.trim().toLowerCase(), counts = {};
+  PORTS.forEach(p => counts[p.status] = (counts[p.status] || 0) + 1);
+  $("#pchips").innerHTML = [["", "All " + PORTS.length], ...Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, k + " " + n])]
+    .map(([k, l]) => `<button class="chip ${k === pstat ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
+  $("#pchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { pstat = b.dataset.s; store.set("pstat", pstat); renderPorts(); });
+  let rows = PORTS.map((p, i) => [p, i]).filter(([p]) => (!pstat || p.status === pstat) &&
+    (!q || [p.switch, p.cv_switch, p.intf, p.device, p.device_port, p.panels.join(" "), p.cables.join(" "), p.iplist, p.end].join(" ").toLowerCase().includes(q)));
+  // grouping: by switch, by device, or by patch panel (a port through 2 panels is listed under both)
+  const keyOf = p => pgroup === "switch" ? [p.switch] : pgroup === "device" ? [p.device || p.end || "(no device)"] : (p.panels.length ? p.panels : ["(no patch panel)"]);
+  const groups = new Map();
+  rows.forEach(r => keyOf(r[0]).forEach(k => { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }));
+  const keys = [...groups.keys()].sort((a, b) => (a.startsWith("(") - b.startsWith("(")) || a.localeCompare(b, undefined, { numeric: true }));
+  const natural = (a, b) => a[0].switch.localeCompare(b[0].switch, undefined, { numeric: true }) || a[0].nums.join(".").localeCompare(b[0].nums.join("."), undefined, { numeric: true });
+  let html = "", shown = 0;
+  for (const k of keys) {
+    if (shown > 2500) break;
+    const g = groups.get(k).sort(natural), bad = g.filter(([p]) => p.status !== "ok").length;
+    const head = k.startsWith("(") ? esc(k) : devA(k);
+    html += `<tr class="grp"><td colspan="8">${head} <span class="muted">· ${g.length} port${g.length > 1 ? "s" : ""}${bad ? " · " + bad + " not ok" : ""}</span></td></tr>`;
+    for (const [p, i] of g) {
+      shown++;
+      html += `<tr class="click" data-i="${i}"><td>${devA(p.switch)}</td><td class="mono">${esc(p.intf)}</td>
+        <td>${p.device ? devA(p.device) : '<span class="muted">' + esc(p.end || "–") + "</span>"}${p.future ? ' <span class="tag bad">future</span>' : ""}</td>
+        <td>${esc(p.device_port)}</td><td>${p.panels.map(x => `<span class="pnl">${devA(x)}</span>`).join("")}</td>
+        <td class="mono" style="font-size:.78rem">${esc(p.cables.join(" + "))}${p.length ? '<br><span class="muted">' + esc(p.length) + "</span>" : ""}</td>
+        <td>${esc(p.iplist)}</td><td><span class="st ${p.status.replace(/ /g, "")}">${esc(p.status)}</span>${p.snags ? ' <span class="tag warn">' + p.snags + " snag</span>" : ""}${p.events ? ' <span class="tag bad">CV</span>' : ""}</td></tr>`;
+    }
+  }
+  $("#ptable tbody").innerHTML = html || '<tr><td colspan="8" class="empty">Nothing for this filter.</td></tr>';
+  $("#ptable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { const p = PORTS[+tr.dataset.i]; selectRow(tr); openPort(p.switch, intf(p.nums)); });
+  const act = [pstat && "status <b>" + esc(pstat) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
+  $("#psum").innerHTML = `Showing <b>${rows.length}</b> of ${PORTS.length} ports in <b>${keys.length}</b> groups · grouped by <b>${{ switch: "switch", device: "device", panel: "patch panel" }[pgroup]}</b>${act.length ? " · filtered by " + act.join(", ") : ""}
+    ${act.length ? '<button class="btn" id="pclear">Clear filters</button>' : ""}`;
+  const pc = $("#pclear"); if (pc) pc.onclick = () => { pstat = ""; store.set("pstat", ""); $("#pq").value = ""; renderPorts(); };
+  $("#pfoot").textContent = (shown > 2500 ? "First ~2500 ports listed – narrow the filter or use Download CSV. " : "") + "Click a row for the port card; click a switch, device or panel name for all its connections.";
+  reselect("#ptable");
+}
+$("#pq").oninput = () => PORTS && renderPorts();
+$("#pgroup").onchange = () => { pgroup = $("#pgroup").value; store.set("pgroup", pgroup); PORTS && renderPorts(); };
+
+// ------------------------------------------------------------- devices list
+let DEVS = null, dkind = store.get("dkind", "device");
+async function loadDevs() {
+  try { DEVS = (await api("/api/devices")).items; } catch (e) { $("#dfoot").textContent = e.message; return; }
+  renderDevs();
+}
+function renderDevs() {
+  const q = $("#dq").value.trim().toLowerCase(), counts = {};
+  DEVS.forEach(d => counts[d.kind] = (counts[d.kind] || 0) + 1);
+  const label = { device: "Devices", switch: "Switches", "patch panel": "Patch panels" };
+  $("#dchips").innerHTML = [["", "All " + DEVS.length], ...Object.keys(label).filter(k => counts[k]).map(k => [k, label[k] + " " + counts[k]])]
+    .map(([k, l]) => `<button class="chip ${k === dkind ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
+  $("#dchips").querySelectorAll(".chip").forEach(b => b.onclick = () => { dkind = b.dataset.s; store.set("dkind", dkind); renderDevs(); });
+  const rows = DEVS.map((d, i) => [d, i]).filter(([d]) => (!dkind || d.kind === dkind) &&
+    (!q || [d.device, d.alias, d.template, d.location].join(" ").toLowerCase().includes(q)));
+  $("#dtable tbody").innerHTML = rows.slice(0, 2500).map(([d, i]) => `<tr class="click" data-i="${i}"><td><b>${esc(d.device)}</b>${d.alias ? ' <span class="muted">' + esc(d.alias) + "</span>" : ""}${d.future ? ' <span class="tag bad">future</span>' : ""}</td>
+    <td>${esc(d.kind)}</td><td>${esc(d.template)}</td><td class="muted">${esc(d.location)}${d.position ? " · " + esc(d.position) : ""}</td><td>${d.links || '<span class="muted">0</span>'}</td></tr>`).join("")
+    || '<tr><td colspan="5" class="empty">Nothing for this filter.</td></tr>';
+  $("#dtable tbody").querySelectorAll("tr.click").forEach(tr => tr.onclick = () => { selectRow(tr); openDevice(DEVS[+tr.dataset.i].device); });
+  const act = [dkind && "type <b>" + esc(label[dkind] || dkind) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
+  $("#dsum").innerHTML = `Showing <b>${rows.length}</b> of ${DEVS.length}${act.length ? " · filtered by " + act.join(", ") : ""} · sorted by name
+    ${act.length ? '<button class="btn" id="dclear">Clear filters</button>' : ""}`;
+  const dc = $("#dclear"); if (dc) dc.onclick = () => { dkind = ""; store.set("dkind", ""); $("#dq").value = ""; renderDevs(); };
+  $("#dfoot").textContent = (rows.length > 2500 ? "First 2500 listed – narrow the filter. " : "") + "Click a row: all connections of that device open on the right.";
+  reselect("#dtable");
+}
+$("#dq").oninput = () => DEVS && renderDevs();
 
 // ------------------------------------------------------------- mismatches
 let MIS = null, msev = store.get("msev", "error");
@@ -650,7 +837,7 @@ async function loadSwitches() {
 function renderSwitches() {
   const q = $("#sq").value.trim().toLowerCase();
   $("#stable tbody").innerHTML = SW.map((s, i) => [s, i]).filter(([s]) => !q || (s.pm + " " + s.cv).toLowerCase().includes(q)).map(([s, i]) => `<tr>
-    <td>${esc(s.pm)}</td><td class="mono">${esc(s.cv) || '<span class="muted">–</span>'}</td>
+    <td>${devA(s.pm)}</td><td class="mono">${esc(s.cv) || '<span class="muted">–</span>'}</td>
     <td><input type="text" data-i="${i}" value="${s.override ? esc(s.cv) : ""}" placeholder="hostname"></td>
     <td>${s.dup ? '<span class="tag bad">same hostname as another switch</span>' : ""}${s.in_cv === false ? '<span class="tag warn">not in CloudVision inventory</span>' : s.in_cv ? '<span class="tag ok">in CloudVision</span>' : ""}</td></tr>`).join("");
 }
@@ -687,7 +874,7 @@ async function upload(files, log = $("#importlog")) {
       line.innerHTML = `<span class="okt">${esc(f.name)}: ${esc(KINDS[r.kind])}, ${r.count} rows</span>`; }
     catch (e) { line.innerHTML = `<span class="err">${esc(f.name)}: ${esc(e.message)}</span>`; }
   }
-  MIS = null; await loadStatus(); loadWork(); loadShutCount();
+  MIS = null; PORTS = null; DEVS = null; await loadStatus(); loadWork(); loadShutCount();
 }
 $("#file").onchange = e => upload([...e.target.files]);
 const drop = $("#drop");

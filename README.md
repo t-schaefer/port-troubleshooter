@@ -34,6 +34,9 @@ new installation starts empty.
 - **Mismatches.** Every port where Patchmanager, the IP list and the snagging list disagree.
 - **To shut.** Mark a device as *future use*: its switch ports are listed with ready-made
   Arista `shutdown` config. Ports where the documentation disagrees are never included.
+- **Notes & Jira.** Every port and device card has notes: who (type a name or pick one
+  used before), a comment and a Jira link. Tick "also put it on the worklist" – or press
+  **+ Add to worklist** – and it stays in the Worklist until someone marks it done.
 - **Hand it on.** Copy a job card for a technician, copy a link, print, or download a CSV.
 
 Tip: in a list, clicking a row opens the details on the right and the list stays where it
@@ -54,5 +57,7 @@ You need Python 3.8 or newer. Nothing else to install.
 ## Good to know
 
 - Your data stays local. Imports are kept in `data/`, which is never uploaded to git.
+- Jira keys like `PLS-123` become links once `jira_url` is set in `config.json`
+  (e.g. `https://yourcompany.atlassian.net`); full Jira URLs are always clickable.
 - CloudVision is optional: put a read-only token in `cv_token.txt` and restart.
 - Details on matching rules, settings and CloudVision: [docs/TECHNICAL.md](docs/TECHNICAL.md)
