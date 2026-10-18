@@ -120,12 +120,15 @@
   .chain .ind { flex: none; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre; }
   .chain .body { flex: 1; min-width: 0; } .chain .cabs { font-size: 0.78rem; color: var(--muted); }
   .chain .fl { font-size: 0.8rem; margin-top: 2px; } .chain .fl.error { color: var(--bad); font-weight: 600; } .chain .fl.warning { color: var(--warn); } .chain .fl.info { color: var(--muted); }
+  .vh { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; opacity: 0; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 55; display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px; overflow-y: auto; }
   .modal .mbox { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 16px 16px; width: min(860px, 100%); }
   .modal .dhead { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; }
   .modal select { max-width: 100%; font-size: 0.82rem; padding: 4px 6px; }
   .nodata { background: var(--warnbg); border: 1px solid var(--warn); border-radius: 12px; padding: 16px 18px; margin-top: 16px; }
   .nodata h3 { margin: 0 0 8px; } .nodata ol { margin: 6px 0 10px 18px; padding: 0; } .nodata li { margin: 3px 0; }
+  .help h2 { margin-top: 0; font-size: 1.3rem; } .help h3 { margin: 18px 0 6px; } .help ul { padding-left: 20px; } .help li { margin: 3px 0; }
+  .help table { margin: 6px 0 10px; } .help code { background: var(--hl); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: .85em; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; z-index: 60; }
   @media print { nav, .searchbar, .hint, .results, .cardhead .tools, header .muted { display: none !important; } body { background: #fff; } .card { border: 0; } }
 </style>
@@ -135,26 +138,27 @@
   <header>
     <h1>Port Troubleshooter</h1>
     <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="muted" id="hdrstatus">loading…</span>
+      <button class="btn" id="helpbtn" title="What this tool does and how to use it">? Help</button>
       <button class="btn" id="updbtn" title="Import the newest exports from the import folders">⟳ Update data <span class="count hidden" id="updcount"></span></button></span>
   </header>
   <nav>
-    <button data-tab="port" class="on">Troubleshoot</button>
+    <button data-tab="ports" class="on">Ports <span class="count" id="portcount">–</span></button>
+    <button data-tab="port">Search</button>
     <button data-tab="work">Worklist <span class="count" id="workcount">–</span></button>
     <button data-tab="mis">Mismatches <span class="count" id="miscount">–</span></button>
-    <button data-tab="ports">Ports <span class="count" id="portcount">–</span></button>
     <button data-tab="devs">Devices</button>
     <button data-tab="shut">To shut <span class="count" id="shutcount">–</span></button>
     <button data-tab="switches">Switches</button>
     <button data-tab="data">Data &amp; CloudVision</button>
   </nav>
+  <div id="nodata" class="hidden"></div>
 
-  <section id="tab-port">
+  <section id="tab-port" class="hidden">
     <form class="searchbar" id="searchform" autocomplete="off">
       <input type="search" id="q" placeholder="Device, alias, asset tag, hostname · Ethernet12 on dcbeswcpredg001 · DCB.ESW A01 12 · F03639" autofocus>
       <button class="btn primary" type="submit">Search</button>
     </form>
     <p class="hint muted">Any name a device is known by (Patchmanager label, alias, asset tag, description, IP list, snagging list, CloudVision hostname – partial is fine), a switch port ("Ethernet49 on idf2eswcpredg03", "DCB.ESW A01 12") or a cable ID.</p>
-    <div id="nodata" class="hidden"></div>
     <div class="results hidden" id="results"></div>
     <div id="card"></div>
   </section>
@@ -188,7 +192,7 @@
     <p class="muted" id="mfoot"></p>
   </section>
 
-  <section id="tab-ports" class="hidden">
+  <section id="tab-ports">
     <div class="filters">
       <label class="muted">Group by <select id="pgroup"><option value="switch">Switch</option><option value="device">Device</option><option value="panel">Patch panel</option></select></label>
       <input type="search" id="pq" placeholder="Filter (switch, device, panel, cable, IP list…)" style="flex:1;min-width:220px">
@@ -234,7 +238,7 @@
   <section id="tab-data" class="hidden">
     <div class="datagrid" id="datagrid"></div>
     <label class="drop" id="drop">
-      <input type="file" id="file" accept=".csv,.xlsx,.xlsm" multiple class="hidden">
+      <input type="file" id="file" accept=".csv,.xlsx,.xlsm" multiple class="vh">
       <b>Drop files here or click to import</b><br>
       <span class="muted">Patchmanager cable export (CSV) · Patchmanager equipment export (CSV) · IP list View (xlsx) · Connectivity snagging list (xlsx).
         The type is detected automatically; a new file replaces the previous one of the same type.</span>
@@ -249,24 +253,23 @@
     </div>
   </section>
 </main>
-<div class="modal hidden" id="updmodal" role="dialog" aria-label="Update from latest files">
+<div class="modal hidden" id="updmodal" role="dialog" aria-label="Update data">
   <div class="mbox">
     <div class="dhead"><b>Update data</b><button class="btn sm" id="updclose">✕</button></div>
-    <label class="drop" id="upddrop" style="margin-top:0">
-      <input type="file" id="updfile" accept=".csv,.xlsx,.xlsm" multiple class="hidden">
-      <b>Upload from this PC:</b> drop the export files here or <span class="lnk">click to choose files</span><br>
-      <span class="muted">Patchmanager cables + equipment (CSV), IP list View (xlsx), snagging list (xlsx), Neuron signal list (xlsx), CloudVision Ethernet-interfaces exports (CSV, one per switch – keep CloudVision's file name) – several at once is fine, the type is detected automatically.</span>
-    </label>
-    <div id="updlog" class="muted" style="margin:6px 0 4px"></div>
-    <h2 style="margin-top:16px">…or take the newest files from the server's import folder</h2>
-    <p class="muted" id="upddirs"></p>
-    <div class="tablewrap"><table id="updtable"><thead><tr><th></th><th>Input</th><th>Loaded now</th><th>Newest in the folders</th></tr></thead><tbody></tbody></table></div>
-    <p class="muted" id="updhint">Ticked = a newer file was found in the folder. Copy new exports there (e.g. via a share), then Scan again.</p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center"><span id="updmsg" class="muted"></span><button class="btn" id="updrescan">Scan again</button><button class="btn primary" id="updgo">Import ticked</button></div>
+    <h2 style="margin-top:0">Loaded now</h2>
+    <div class="tablewrap"><table id="updloaded"><thead><tr><th>Input</th><th>File</th><th>Imported</th></tr></thead><tbody></tbody></table></div>
+    <h2>Upload newer files</h2>
+    <div class="drop" id="upddrop" style="margin-top:0">
+      <input type="file" id="updfile" accept=".csv,.xlsx,.xlsm" multiple class="vh">
+      <button class="btn primary" id="updpick" type="button">Choose files…</button> <span class="muted">or drop them here</span><br>
+      <span class="muted">Patchmanager cables + equipment (CSV), IP list View (xlsx), snagging list (xlsx), Neuron signal list (xlsx), CloudVision Ethernet-interfaces exports (CSV, one per switch – keep CloudVision's file name). Several at once is fine; the type is detected automatically and replaces the older file of that type.</span>
+    </div>
+    <div id="updlog" style="margin:6px 0 4px"></div>
+    <div id="updfolder"></div>
   </div>
 </div>
 <aside class="drawer" id="drawer" aria-label="Details">
-  <div class="dhead"><span class="muted" id="dtitle">Details</span><span><button class="btn sm" id="dfull" title="Open on the Troubleshoot tab">Open full page</button> <button class="btn sm" id="dclose" title="Close (Esc)">✕ Close</button></span></div>
+  <div class="dhead"><span class="muted" id="dtitle">Details</span><span><button class="btn sm" id="dfull" title="Open on the Search tab, full width">Open full page</button> <button class="btn sm" id="dclose" title="Close (Esc)">✕ Close</button></span></div>
   <div id="drawerbody"></div>
 </aside>
 <script>
@@ -280,9 +283,9 @@ const store = { get(k, d) { try { return JSON.parse(localStorage.getItem("pt." +
 let STATUS = null, WORK = [], CURRENT = null;
 
 // ------------------------------------------------------------- tabs / routing
-// Port / device / cable / chain views open on the Troubleshoot tab - or, when you are in a
+// Port / device / cable / chain views open on the Search tab - or, when you are in a
 // list (Worklist, Mismatches, To shut, ...), in a side panel so the list keeps its place.
-let CURTAB = "port", DETAIL = "";
+let CURTAB = "ports", DETAIL = "";   // start page: Ports
 const LIST_TABS = ["work", "mis", "ports", "devs", "shut", "switches", "data"];
 function out() {
   if (CURTAB === "port") return $("#card");
@@ -329,7 +332,7 @@ function route() {
   else if (c) openCable(+c[1], c[2]);
   else if (ch) openChain(ch[1]);
   else if (LIST_TABS.includes(h)) { $("#drawer").classList.remove("open"); if (CURTAB !== h) showTab(h); }
-  else if (!h) showTab("port");
+  else if (!h) showTab("ports");
 }
 window.addEventListener("hashchange", route);
 window.addEventListener("popstate", route);
@@ -615,32 +618,49 @@ async function openDevice(name) {
   };
 }
 
+// ------------------------------------------------------------- help (README.md from the server)
+async function openHelp() {
+  const keep = CURTAB === "port" ? null : CURTAB;
+  $("#dtitle").textContent = "Help";
+  const box = keep ? ($("#drawer").classList.add("open"), $("#drawerbody")) : $("#card");
+  box.innerHTML = '<div class="card muted">loading…</div>';
+  try { const h = await api("/api/help"); box.innerHTML = `<div class="card help">${h.html}</div>`; }
+  catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+$("#helpbtn").onclick = openHelp;
+
 // ------------------------------------------------------------- update from latest files
 let SRC = null;
 async function scanSources() {
-  try { SRC = await api("/api/sources"); } catch (e) { $("#updmsg").textContent = e.message; return; }
+  try { SRC = await api("/api/sources"); } catch (e) { const l = $("#updlog"); if (l) l.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
   const n = Object.values(SRC.kinds).filter(k => k.newer).length;
   $("#updcount").textContent = n; $("#updcount").classList.toggle("hidden", !n);
   $("#updbtn").classList.toggle("primary", n > 0);
   return SRC;
 }
 async function openUpdate() {
-  $("#updmodal").classList.remove("hidden"); $("#updmsg").textContent = "scanning folders…";
+  $("#updmodal").classList.remove("hidden");
   if (!await scanSources()) return;
-  $("#upddirs").innerHTML = "Folders: " + SRC.dirs.map(d => `<span class="mono">${esc(d)}</span>`).join(" · ");
-  $("#updtable tbody").innerHTML = Object.keys(SRC.kinds).map(k => {
-    const label = kindLabel(k), e = SRC.kinds[k] || { candidates: [] }, cur = e.current;
-    const opts = e.candidates.map(c => `<option value="${c.id}">${esc(c.name)} – ${esc(c.mtime.replace("T", " "))}${c.loaded ? " (loaded)" : ""}</option>`).join("");
-    return `<tr><td><input type="checkbox" data-k="${k}" ${e.newer ? "checked" : ""} ${e.candidates.length ? "" : "disabled"}></td>
-      <td><b>${esc(label)}</b>${e.newer ? ' <span class="tag warn">newer file</span>' : e.candidates.length ? ' <span class="tag ok">up to date</span>' : ""}</td>
-      <td class="muted">${cur ? esc(cur.file) + "<br>" + esc(cur.loaded.replace("T", " ")) : "not imported"}</td>
-      <td>${opts ? `<select data-k="${k}">${opts}</select>` : '<span class="muted">no file found</span>'}</td></tr>`;
-  }).join("");
-  const found = Object.values(SRC.kinds).some(k => k.candidates.length);
-  $("#updhint").innerHTML = found ? "Ticked = a newer file was found in the folder. Copy new exports there (e.g. via a share), then Scan again."
-    : "<b>No export files in the import folder.</b> Use the upload above – or copy the files into the folder and click Scan again.";
-  $("#updgo").disabled = !found;
-  $("#updmsg").textContent = "";
+  const keys = Object.keys(SRC.kinds);
+  $("#updloaded tbody").innerHTML = keys.map(k => { const cur = SRC.kinds[k].current;
+    return `<tr><td><span class="dot ${cur ? "ok" : ""}" style="display:inline-block;margin-right:6px"></span><b>${esc(kindLabel(k))}</b></td>
+      <td>${cur ? esc(cur.file) : '<span class="muted">not imported</span>'}</td><td class="muted">${cur ? esc(cur.loaded.replace("T", " ")) : ""}</td></tr>`; }).join("");
+  // the server's import folder: only offered when there is something in it
+  const found = keys.filter(k => SRC.kinds[k].candidates.length);
+  const dirs = SRC.dirs.map(d => `<span class="mono">${esc(d)}</span>`).join(" · ");
+  if (!found.length) {
+    $("#updfolder").innerHTML = `<p class="muted" style="margin-top:14px">Optional: files copied into the server's import folder (${dirs}) are offered here too – it is empty right now.
+      <button class="btn sm" id="updrescan">Scan again</button></p>`;
+  } else {
+    $("#updfolder").innerHTML = `<h2>${found.some(k => SRC.kinds[k].newer) ? "Newer files in the server's import folder" : "Files in the server's import folder (all already loaded)"}</h2><p class="muted">${dirs}</p>
+      <div class="tablewrap"><table id="updtable"><thead><tr><th>Import</th><th>Input</th><th>File in the folder</th></tr></thead><tbody>${found.map(k => { const e = SRC.kinds[k];
+        return `<tr><td><input type="checkbox" data-k="${k}" ${e.newer ? "checked" : ""}></td><td><b>${esc(kindLabel(k))}</b> ${e.newer ? '<span class="tag warn">newer</span>' : '<span class="tag ok">already loaded</span>'}</td>
+          <td><select data-k="${k}">${e.candidates.map(c => `<option value="${c.id}">${esc(c.name)} – ${esc(c.mtime.replace("T", " "))}${c.loaded ? " (loaded)" : ""}</option>`).join("")}</select></td></tr>`; }).join("")}</tbody></table></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px"><span id="updmsg" class="muted"></span>
+        <button class="btn" id="updrescan">Scan again</button><button class="btn primary" id="updgo">Import ticked</button></div>`;
+    $("#updgo").onclick = importTicked;
+  }
+  $("#updrescan").onclick = openUpdate;
 }
 $("#updbtn").onclick = () => { $("#updlog").innerHTML = ""; openUpdate(); };
 $("#updfile").onchange = async e => { await upload([...e.target.files], $("#updlog")); e.target.value = ""; openUpdate(); };
@@ -650,8 +670,8 @@ updDrop.ondragleave = () => updDrop.classList.remove("over");
 updDrop.ondrop = async e => { e.preventDefault(); updDrop.classList.remove("over"); await upload([...e.dataTransfer.files], $("#updlog")); openUpdate(); };
 $("#updclose").onclick = () => $("#updmodal").classList.add("hidden");
 $("#updmodal").onclick = e => { if (e.target.id === "updmodal") $("#updmodal").classList.add("hidden"); };
-$("#updrescan").onclick = openUpdate;
-$("#updgo").onclick = async () => {
+$("#updpick").onclick = () => $("#updfile").click();
+async function importTicked() {
   const ids = [...document.querySelectorAll("#updtable input:checked")].map(cb => document.querySelector(`#updtable select[data-k="${cb.dataset.k}"]`)?.value).filter(Boolean);
   if (!ids.length) { $("#updmsg").textContent = "nothing ticked"; return; }
   $("#updmsg").textContent = "importing…";
@@ -934,6 +954,7 @@ async function upload(files, log = $("#importlog")) {
     catch (e) { line.innerHTML = `<span class="err">${esc(f.name)}: ${esc(e.message)}</span>`; }
   }
   MIS = null; PORTS = null; DEVS = null; await loadStatus(); loadWork(); loadShutCount();
+  if (CURTAB === "ports") loadPorts();
 }
 $("#file").onchange = e => upload([...e.target.files]);
 const drop = $("#drop");

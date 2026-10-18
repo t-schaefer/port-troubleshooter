@@ -25,6 +25,8 @@ new installation starts empty.
 
 ## What you can do
 
+The tool opens on **Ports**; **? Help** (top right) shows this page.
+
 - **Search by any name.** Device label, alias, asset tag, hostname, part of a name,
   a cable ID, or a CloudVision line such as `Ethernet49 on idf2eswcpredg03`.
 - **Port card.** The full cable path from switch port to device, what the IP list says,

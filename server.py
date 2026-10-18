@@ -200,6 +200,73 @@ def worklist():
     return manual_work_items() + STORE.worklist(CV["events"])
 
 
+# ---------------------------------------------------------------- help page (README.md)
+REPO_URL = "https://github.com/t-schaefer/port-troubleshooter/blob/main/"
+
+
+def md_to_html(md):
+    """The little Markdown README.md uses: headings, paragraphs, lists, tables, `code`,
+    **bold**, *italic*, [links]. Relative links point to the GitHub repo."""
+    import html as H
+
+    def inline(t):
+        t = H.escape(t, quote=False)
+        t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)\*(?!\w)", r"<i>\1</i>", t)
+
+        def link(m):
+            text, url = m.group(1), m.group(2)
+            if not re.match(r"^(https?:|#|/)", url):
+                url = REPO_URL + url.lstrip("./")
+            return '<a class="lnk" href="%s" target="_blank" rel="noopener">%s</a>' % (H.escape(url), text)
+        return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, t)
+
+    out, para, items, table = [], [], [], []
+
+    def flush():
+        if para:
+            out.append("<p>%s</p>" % inline(" ".join(para)))
+            para.clear()
+        if items:
+            out.append("<ul>%s</ul>" % "".join("<li>%s</li>" % inline(i) for i in items))
+            items.clear()
+        if table:
+            rows = [[c.strip() for c in r.strip().strip("|").split("|")] for r in table
+                    if not re.match(r"^\s*\|?\s*:?-{2,}", r)]
+            head, body = rows[0], rows[1:]
+            th = "".join("<th>%s</th>" % inline(c) for c in head) if any(head) else ""
+            out.append("<table>%s<tbody>%s</tbody></table>" % ("<thead><tr>%s</tr></thead>" % th if th else "",
+                       "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % inline(c) for c in r) for r in body)))
+            table.clear()
+
+    for line in md.splitlines():
+        if not line.strip():
+            flush()
+            continue
+        m = re.match(r"^(#{1,3})\s+(.*)$", line)
+        if m:
+            flush()
+            n = len(m.group(1)) + 1   # README '#' = page title -> h2 inside the panel
+            out.append("<h%d>%s</h%d>" % (n, inline(m.group(2)), n))
+        elif line.lstrip().startswith("|"):
+            if para or items:
+                flush()
+            table.append(line)
+        elif re.match(r"^\s*[-*]\s+", line):
+            if para or table:
+                flush()
+            items.append(re.sub(r"^\s*[-*]\s+", "", line))
+        elif items and line.startswith("  "):
+            items[-1] += " " + line.strip()      # continued list item
+        else:
+            if items or table:
+                flush()
+            para.append(line.strip())
+    flush()
+    return "\n".join(out)
+
+
 def to_csv(rows, cols):
     """Excel-friendly CSV: UTF-8 with BOM, one header row."""
     f = io.StringIO()
@@ -446,6 +513,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/":
                 self._send(PAGE_FILE.read_bytes(), "text/html; charset=utf-8")
+            elif u.path == "/api/help":
+                try:
+                    md = (BASE_DIR / "README.md").read_text(encoding="utf-8")
+                except OSError:
+                    md = "# Help\n\nREADME.md not found."
+                self._json({"html": md_to_html(md)})
             elif u.path == "/api/status":
                 with LOCK:
                     cfg = load_config()
