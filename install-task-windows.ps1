@@ -6,10 +6,10 @@
 .NOTES
   Usually started by double-clicking Install-PortTroubleshooter.bat.
   By hand, from an elevated PowerShell in this folder:
-      powershell -ExecutionPolicy Bypass -File .\install-task-windows.ps1            # port 8102
+      powershell -ExecutionPolicy Bypass -File .\install-task-windows.ps1            # port 8092
       powershell -ExecutionPolicy Bypass -File .\install-task-windows.ps1 -Port 8110
 #>
-param([int]$Port = 8102)
+param([int]$Port = 8092)
 $ErrorActionPreference = "Stop"
 
 $TaskName = "PortTroubleshooterService"

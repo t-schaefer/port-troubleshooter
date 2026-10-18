@@ -115,10 +115,10 @@ the Data tab and fix the field mapping in cloudvision.py if needed.
 
 RUN
 ---
-  Mac / quick test:   python3 server.py            -> http://localhost:8102/
-  Windows test:       Start-PortTroubleshooter.bat -> http://localhost:8112/
+  Mac / quick test:   python3 server.py            -> http://localhost:8092/
+  Windows test:       Start-PortTroubleshooter.bat -> http://localhost:8098/
   Windows service:    Install-PortTroubleshooter.bat   (Scheduled Task "PortTroubleshooterService",
-                      SYSTEM, at boot, auto-restart, firewall rule for 8102)
+                      SYSTEM, at boot, auto-restart, firewall rule for 8092)
   Update:             Update-PortTroubleshooter.bat    (git pull --ff-only, restart)
   Stop:               Stop-PortTroubleshooter.bat      Remove: uninstall-task-windows.ps1
 

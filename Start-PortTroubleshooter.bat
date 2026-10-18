@@ -1,10 +1,10 @@
 @echo off
 rem Runs the Port Troubleshooter in this window (no service) - for a quick test.
-rem     Start-PortTroubleshooter.bat        -> http://localhost:8112/
+rem     Start-PortTroubleshooter.bat        -> http://localhost:8098/
 setlocal
 set "HERE=%~dp0"
 set "PORT=%~1"
-if "%PORT%"=="" set "PORT=8112"
+if "%PORT%"=="" set "PORT=8098"
 cd /d "%HERE%"
 where python >nul 2>&1
 if %errorlevel% neq 0 (

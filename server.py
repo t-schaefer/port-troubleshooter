@@ -3,7 +3,7 @@ Port Troubleshooter - one page to troubleshoot a switch port: documented cable p
 (Patchmanager), what the IP list expects there, the snagging-list history and the
 live CloudVision events, side by side.
 
-- Standard library only (Python 3.8+), ThreadingHTTPServer, default port 8102.
+- Standard library only (Python 3.8+), ThreadingHTTPServer, default port 8092.
 - Inputs are imported in the page (or dropped into data/): Patchmanager cable export (CSV),
   Patchmanager all-equipment export (CSV), IP list "View" (xlsx), Connectivity
   snagging list (xlsx). The type is detected from the content. The last import of each type
@@ -14,7 +14,7 @@ live CloudVision events, side by side.
 - PM <-> CloudVision switch names: from the snagging list's name sheet, overrides in
   switches.json (git-ignored, editable in the page).
 
-    python server.py               # http://<this pc>:8102/
+    python server.py               # http://<this pc>:8092/
     python server.py --port 8110
 """
 import argparse
@@ -499,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8102)
+    ap.add_argument("--port", type=int, default=8092)
     args = ap.parse_args()
     load_config()
     for d in import_dirs():

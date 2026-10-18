@@ -42,7 +42,7 @@ was. Press Esc to close.
 
 | | |
 |---|---|
-| Open | `http://<server>:8102/` |
+| Open | `http://<server>:8092/` |
 | Install as a Windows service | `Install-PortTroubleshooter.bat` |
 | Update to the latest version | `Update-PortTroubleshooter.bat` |
 | Stop / quick test | `Stop-PortTroubleshooter.bat` / `Start-PortTroubleshooter.bat` |
