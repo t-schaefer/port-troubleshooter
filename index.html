@@ -23,7 +23,8 @@
   nav .count { font-size: 0.75rem; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 4px; }
   .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 0.85rem; cursor: pointer; }
   .btn:hover { border-color: var(--accent); } .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .btn.sm { padding: 2px 9px; font-size: 0.78rem; } .btn.warn { border-color: var(--bad); color: var(--bad); } a.btn { text-decoration: none; display: inline-block; } .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.sm { padding: 2px 9px; font-size: 0.78rem; }
+  .portnav { display: inline-flex; gap: 4px; align-items: center; } .portnav select { font-size: 0.8rem; padding: 2px 4px; max-width: 150px; } .btn.warn { border-color: var(--bad); color: var(--bad); } a.btn { text-decoration: none; display: inline-block; } .btn:disabled { opacity: .45; cursor: not-allowed; }
   input[type=text], input[type=search], select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
   .searchbar { display: flex; gap: 8px; }
   .searchbar input { flex: 1; font-size: 1.05rem; padding: 10px 12px; }
@@ -301,6 +302,10 @@ function setHash(h) {           // remember the view in the URL (back / reload /
 $("#dclose").onclick = closeDrawer;
 $("#dfull").onclick = () => { const h = DETAIL; closeDrawer(); showTab("port"); location.hash = h; };
 document.addEventListener("keydown", e => {
+  if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && CURRENT && !e.target.closest("input, textarea, select")
+      && (CURTAB === "port" || $("#drawer").classList.contains("open")) && (DETAIL || "").startsWith("port=")) {
+    e.preventDefault(); return stepPort(e.key === "ArrowLeft" ? -1 : 1);
+  }
   if (e.key !== "Escape") return;
   if (!$("#updmodal").classList.contains("hidden")) $("#updmodal").classList.add("hidden");
   else if ($("#drawer").classList.contains("open")) closeDrawer(); });
@@ -379,8 +384,19 @@ async function openPort(sw, i) {
   catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; return; }
   renderPort(CURRENT);
 }
+// step through the switch's real ports (CloudVision export / Patchmanager / IP list / snags),
+// and keep the Ports list in step with it
 function stepPort(d) {
-  const n = [...CURRENT.nums]; n[n.length - 1] = Math.max(1, n[n.length - 1] + d); openPort(CURRENT.switch, intf(n));
+  const nav = CURRENT && CURRENT.nav, to = nav && (d < 0 ? nav.prev : nav.next);
+  if (to) openPort(CURRENT.switch, intf(to));
+}
+function markPortRow(c) {
+  if (!PORTS) return;
+  const t = $("#ptable"), i = PORTS.findIndex(p => p.switch === c.switch && (p.intf === c.intf || p.cv_intf === c.intf || c.intf.startsWith(p.intf + "/")));
+  t.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel"));
+  if (i < 0) return;
+  const tr = t.querySelector(`tr[data-i="${i}"]`);
+  if (tr) { tr.classList.add("sel"); t.dataset.sel = i; tr.scrollIntoView({ block: "nearest" }); }
 }
 function renderPort(c) {
   const eq = c.equipment;
@@ -395,7 +411,11 @@ function renderPort(c) {
     <div class="cardhead">
       <div><h3>${esc(c.switch)} · ${esc(c.intf)}</h3>
         <div class="muted">CloudVision: <span class="mono">${esc(c.cv_switch || "–")} ${esc(c.intf)}</span>${eq ? " · " + esc(eq.template) + " · " + esc(eq.location) + (eq.position ? " · " + esc(eq.position) : "") : ""}</div></div>
-      <div class="tools"><button class="btn sm" id="prev">◀ port</button><button class="btn sm" id="next">port ▶</button>
+      <div class="tools"><span class="portnav">
+          <button class="btn sm" id="prev" ${c.nav && c.nav.prev ? "" : "disabled"} title="${c.nav && c.nav.prev ? esc(intf(c.nav.prev)) : "first port"}">◀</button>
+          <select id="portpick" title="Jump to a port of ${esc(c.switch)} (← / → keys step)">${c.nav ? c.nav.ports.map(p => `<option ${p === c.intf || (c.nav.ports[c.nav.index - 1] === p) ? "selected" : ""}>${esc(p)}</option>`).join("") : `<option>${esc(c.intf)}</option>`}</select>
+          <button class="btn sm" id="next" ${c.nav && c.nav.next ? "" : "disabled"} title="${c.nav && c.nav.next ? esc(intf(c.nav.next)) : "last port"}">▶</button>
+          ${c.nav ? `<span class="muted" style="font-size:.78rem">${c.nav.index} of ${c.nav.total}</span>` : ""}</span>
         <button class="btn sm primary" data-addwork>+ Add to worklist</button>
         <button class="btn sm" id="copy">Copy job card</button><button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div>
     </div>
@@ -420,6 +440,8 @@ function renderPort(c) {
   </div>`;
   notesSection(box, { type: "port", switch: c.switch, nums: c.nums });
   box.querySelector("#prev").onclick = () => stepPort(-1); box.querySelector("#next").onclick = () => stepPort(1);
+  box.querySelector("#portpick").onchange = e => openPort(c.switch, e.target.value);
+  if (CURTAB === "ports") markPortRow(c);
   box.querySelector("#copy").onclick = () => copy(jobCard(c), "Job card copied");
   box.querySelector("#link").onclick = () => copy(shareLink("port=" + c.switch + "|" + c.intf), "Link copied");
 }

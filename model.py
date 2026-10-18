@@ -777,6 +777,7 @@ class Store:
         self._build_name_index()
         self._shut_cache = None
         self._noff = None
+        self._swports = None
 
     # -- device names -------------------------------------------------------------
     def _build_name_index(self):
@@ -988,6 +989,50 @@ class Store:
                              "verdict": "not in plan"})
         return rows
 
+    # -- the ports of one switch (for stepping through them) -----------------------------------
+    def switch_ports(self, switch):
+        """All ports known for a switch, sorted: CloudVision export interfaces (exact, with lanes)
+        where there is an export, otherwise / plus the documented ports (Patchmanager, IP list,
+        snags). A base port is dropped when its lanes are listed."""
+        pm = self.pm_name(switch) or switch
+        key = norm_name(pm)
+        cache = getattr(self, "_swports", None)
+        if cache is None:
+            cache = self._swports = {}
+        if key in cache:
+            return cache[key]
+        nums = set()
+        host = (self.cv_name(pm) or "").upper()
+        nums |= set(self.cvports.get(host, {}).keys())
+        if self.cabling:
+            nums |= {tuple(n) for n, _ in self.cabling.ports_of(pm)}
+        modular = bool(self.cabling) and self.cabling.is_modular(pm)
+        for p in self.plan:
+            if norm_name(p["switch"]) == key and not p["free"]:
+                n = tuple(p["nums"])
+                nums.add(n[1:] if len(n) == 2 and n[0] == 1 and not modular else n)
+        for (sw, n) in self.snags_by:
+            if sw == key:
+                nums.add(tuple(n))
+        # a base port (Ethernet3/13) is covered by its lanes (Ethernet3/13/1..4)
+        out = sorted(n for n in nums if not any(len(m) > len(n) and m[:len(n)] == n for m in nums))
+        cache[key] = out
+        return out
+
+    def neighbours(self, switch, nums):
+        """(index, total, previous, next) of a port in switch_ports - stops at the ends."""
+        ports = self.switch_ports(switch)
+        if not ports:
+            return None
+        nums = tuple(nums)
+        if nums in ports:
+            i = ports.index(nums)
+        else:   # e.g. base port Ethernet3/1 while the export lists Ethernet3/1/1
+            i = next((k for k, p in enumerate(ports) if p[:len(nums)] == nums or p > nums), len(ports) - 1)
+        return {"index": i + 1, "total": len(ports), "prev": list(ports[i - 1]) if i > 0 else None,
+                "next": list(ports[i + 1]) if i + 1 < len(ports) else None,
+                "ports": [intf_name(p) for p in ports]}
+
     # -- CloudVision interface exports ------------------------------------------------------
     def cv_ports_for(self, pm, nums, modular=None):
         """CloudVision export rows (lanes) for a switch port, [] when no export of that switch."""
@@ -1193,6 +1238,8 @@ class Store:
         if self.equipment:
             card["equipment"] = self.equipment.get(pm)
         card["cv_ports"] = self.cv_ports_for(pm, nums, modular)
+        if with_shut:     # (not for the internal bulk calls)
+            card["nav"] = self.neighbours(pm, nums)
         card["compare"] = self._compare_port(card)
         card["shut"] = self.shut_for(pm, nums) if with_shut else None
         card["checks"] = self._checks(card)
