@@ -46,6 +46,19 @@ everything that is still open.
                     cables, IP list and status; group by switch / device / patch panel; CSV.
   Devices tab:      every device / switch / patch panel; click shows all its connections.
 
+  Chassis slots:    CloudVision counts the supervisor slots, Patchmanager (LC01..) and the
+                    IP list (1/1/1) count line cards: CloudVision Ethernet3/1/1 = LC01 port 1
+                    = IP list 1/1/1 (Cabling.slot_offset = 2). Port cards use CloudVision names.
+  CV port exports:  CloudVision "Ethernet interfaces" CSV per switch; switch + export time
+                    from the file name (cvp-ethernet-interfaces-<host>-<YYYY-MM-DD-hh-mm-ss>.csv).
+                    Status / speed / optic / description per port; description is compared
+                    like a source. Not live - the export time is shown.
+  CV links:         <cv_url>/cv/interface/overview/<serial>/<interface>. Serials per hostname
+                    in serials.example.json (defaults) + serials.json (Switches tab).
+  Neuron list:      rear / front cable checked against Patchmanager (IPG port = channel with
+                    direction, panel port R/F + number); card- or panel-wide numbering offsets
+                    are reported once instead of per BNC.
+
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
                     Its switch ports (via cabling AND IP list) are listed under "To shut",

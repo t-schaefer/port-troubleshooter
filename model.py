@@ -195,7 +195,16 @@ def detect_kind(filename, data):
     return None
 
 
-CVPORTS_FILE_RE = re.compile(r"cvp-ethernet-interfaces-(.+?)-\d{4}-\d\d-\d\d", re.I)
+CVPORTS_FILE_RE = re.compile(r"cvp-ethernet-interfaces-(.+?)-(\d{4})-(\d\d)-(\d\d)(?:-(\d\d)-(\d\d)-(\d\d))?", re.I)
+
+
+def cvports_time(filename):
+    """Export time from CloudVision's file name: '...-2026-10-18-14-40-35.csv' -> '2026-10-18 14:40:35'."""
+    m = CVPORTS_FILE_RE.search(filename or "")
+    if not m:
+        return ""
+    y, mo, d, h, mi, se = m.group(2), m.group(3), m.group(4), m.group(5), m.group(6), m.group(7)
+    return "%s-%s-%s" % (y, mo, d) + (" %s:%s:%s" % (h, mi, se) if h else "")
 
 
 def meta_key(kind, filename):
@@ -451,6 +460,10 @@ class Cabling:
         return {"hops": hops, "status": status}
 
     # -- switch ports --------------------------------------------------------
+    # Chassis switches: CloudVision counts the supervisor slots, Patchmanager (LC01..) and the
+    # IP list (1/1/1) count line cards only -> CloudVision Ethernet3/1/1 = LC01 port 1 = IP list 1/1/1.
+    slot_offset = 2
+
     def is_modular(self, switch):
         return any(re.fullmatch(r"LC\d+", e.parent or "") for c, s in self.by_top.get(norm_name(switch), [])
                    for e in [getattr(c, s)])
@@ -470,7 +483,7 @@ class Cabling:
                 continue
             if slot is not None:
                 m = re.fullmatch(r"LC0*(\d+)", e.parent or "")
-                if not m or int(m.group(1)) != slot:
+                if not m or int(m.group(1)) + self.slot_offset != slot:
                     continue
             out.append((c, s))
         return out
@@ -484,7 +497,7 @@ class Cabling:
             if not p.isdigit():
                 continue
             m = re.fullmatch(r"LC0*(\d+)", e.parent or "")
-            nums = (int(m.group(1)), int(p)) if m else (int(p),)
+            nums = (int(m.group(1)) + self.slot_offset, int(p)) if m else (int(p),)
             res[nums].append((c, s))
         return sorted(res.items())
 
@@ -718,8 +731,12 @@ class Store:
             n = len(self.neuron)
         elif kind == "cvports":
             host = meta_key(kind, filename).split(":", 1)[1]
-            self.cvports[host] = parse_cvports(read_csv_text(data))
-            n = len(self.cvports[host])
+            rows = parse_cvports(read_csv_text(data))
+            exported = cvports_time(filename)
+            for r in rows.values():
+                r["exported"], r["host"] = exported, host
+            self.cvports[host] = rows
+            n = len(rows)
         else:
             raise ValueError("unknown kind %r" % kind)
         self.meta[meta_key(kind, filename)] = {"file": filename, "loaded": when, "count": n}
@@ -739,6 +756,16 @@ class Store:
             dup[cv.upper()].append(pm)
             self.cv_to_pm.setdefault(cv.upper(), pm)
         self.mapping_dups = {cv: pms for cv, pms in dup.items() if len(pms) > 1}
+        # IP list slot numbers of chassis switches -> CloudVision numbering (see Cabling.slot_offset);
+        # nums_doc keeps what the list says
+        modular = {}
+        for p in self.plan:
+            p.setdefault("nums_doc", list(p["nums"]))
+            sw = norm_name(p["switch"])
+            if sw not in modular:
+                modular[sw] = bool(self.cabling) and self.cabling.is_modular(p["switch"])
+            nd = p["nums_doc"]
+            p["nums"] = [nd[0] + self.cabling.slot_offset, nd[1]] if modular[sw] and len(nd) == 2 else list(nd)
         self.plan_by = defaultdict(list)
         for p in self.plan:
             self.plan_by[(norm_name(p["switch"]), tuple(p["nums"]))].append(p)
@@ -1089,7 +1116,8 @@ class Store:
         if not p.isdigit():
             return None
         m = re.fullmatch(r"LC0*(\d+)", end.get("parent") or "")
-        return {"switch": end.get("top"), "nums": [int(m.group(1)), int(p)] if m else [int(p)]}
+        off = self.cabling.slot_offset if self.cabling else 0
+        return {"switch": end.get("top"), "nums": [int(m.group(1)) + off, int(p)] if m else [int(p)]}
 
     # -- names -------------------------------------------------------------------
     def pm_name(self, name):
@@ -1630,6 +1658,8 @@ class Store:
         link = "" if not lanes else lanes[0]["status"] if len(lanes) == 1 else "%d/%d up" % (up, len(lanes))
         base = {"switch": card["switch"], "cv_switch": card["cv_switch"], "nums": card["nums"], "intf": card["intf"],
                 "link": link, "link_up": up > 0, "cv_desc": lanes[0]["description"] if lanes else "",
+                "speed": lanes[0]["speed"] if lanes else "", "cv_time": lanes[0]["exported"] if lanes else "",
+                "cv_intf": lanes[0]["intf"] if lanes else "",
                 "iplist": plan, "snags": open_snags, "events": len(card["events"]),
                 "future": (card.get("shut") or {}).get("device", "")}
         if not card["paths"]:

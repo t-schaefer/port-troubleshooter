@@ -45,6 +45,8 @@ CONFIG_FILE = BASE_DIR / "config.json"
 CONFIG_EXAMPLE = BASE_DIR / "config.example.json"
 SWITCHES_FILE = BASE_DIR / "switches.json"
 FUTURE_FILE = BASE_DIR / "future.json"
+SERIALS_FILE = BASE_DIR / "serials.json"
+SERIALS_EXAMPLE = BASE_DIR / "serials.example.json"
 NOTES_FILE = BASE_DIR / "notes.json"
 TOKEN_FILE = BASE_DIR / "cv_token.txt"
 LOG_FILE = BASE_DIR / "service.log"
@@ -222,6 +224,22 @@ def load_config():
         except (OSError, ValueError):
             pass
     return cfg
+
+
+def load_serials():
+    """CloudVision hostname -> device serial (for the per-port link into CloudVision). Defaults
+    from serials.example.json, edits from the Switches tab in serials.json; inventory from the
+    CloudVision API (when configured) fills the rest."""
+    out = {}
+    for f in (SERIALS_EXAMPLE, SERIALS_FILE):
+        try:
+            out.update({k.upper(): v for k, v in json.loads(f.read_text(encoding="utf-8")).items() if v})
+        except (OSError, ValueError):
+            pass
+    for d in CV.get("devices") or []:
+        if d.get("hostname") and d.get("id"):
+            out.setdefault(d["hostname"].upper(), d["id"])
+    return out
 
 
 def cv_token():
@@ -430,7 +448,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(PAGE_FILE.read_bytes(), "text/html; charset=utf-8")
             elif u.path == "/api/status":
                 with LOCK:
-                    self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": load_config().get("jira_url", "")})
+                    cfg = load_config()
+                    self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": cfg.get("jira_url", ""),
+                                "cv_url": cfg.get("cv_url", ""), "serials": load_serials()})
             elif u.path == "/api/search":
                 with LOCK:
                     self._json({"results": STORE.search(q.get("q", "")[:200])})
@@ -518,7 +538,9 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     cvhosts = {d["hostname"].upper() for d in CV["devices"]}
                     sw = STORE.switches()
+                    serials = load_serials()
                     for s in sw:
+                        s["serial"] = serials.get((s["cv"] or "").upper(), "")
                         s["override"] = s["pm"] in STORE.overrides
                         s["in_cv"] = (s["cv"].upper() in cvhosts) if CV["devices"] and s["cv"] else None
                         s["dup"] = s["cv"].upper() in STORE.mapping_dups if s["cv"] else False
@@ -666,6 +688,20 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         return self._err("unknown action")
                     save_notes(notes)
+                self._json({"ok": True})
+            elif u.path == "/api/serials":
+                data = json.loads(body or b"{}")
+                if not isinstance(data, dict) or len(data) > 500:
+                    return self._err("expected {CloudVision hostname: serial}")
+                clean = {}
+                for k, v in data.items():
+                    k, v = str(k).strip().upper(), str(v).strip()
+                    if not re.match(r"^[\w.\-]{1,64}$", k) or (v and not re.match(r"^[A-Za-z0-9\-]{4,40}$", v)):
+                        return self._err("bad serial for %s" % k)
+                    if v:
+                        clean[k] = v
+                SERIALS_FILE.write_text(json.dumps(clean, indent=2, sort_keys=True), encoding="utf-8")
+                log.info("serials.json saved (%d)", len(clean))
                 self._json({"ok": True})
             elif u.path == "/api/cv/refresh":
                 CV_WAKE.set()

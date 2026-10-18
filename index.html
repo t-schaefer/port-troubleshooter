@@ -225,9 +225,9 @@
   </section>
 
   <section id="tab-switches" class="hidden">
-    <p class="muted">Patchmanager name ↔ CloudVision hostname. Taken from the snagging list's name sheet; a value typed here overrides it (saved in switches.json on the server).</p>
+    <p class="muted">Patchmanager name ↔ CloudVision hostname, and the CloudVision serial (device ID) used for the "open in CloudVision" links – it is in the CloudVision URL: …/cv/interface/overview/<b>HNN22357273</b>/Ethernet3%2F1%2F1. Hostnames are taken from the snagging list's name sheet; a value typed here overrides it (saved in switches.json on the server).</p>
     <div class="filters"><input type="search" id="sq" placeholder="Filter" style="flex:1"><button class="btn primary" id="ssave">Save overrides</button><span id="smsg" class="muted"></span></div>
-    <div class="tablewrap"><table id="stable"><thead><tr><th>Patchmanager</th><th>CloudVision hostname</th><th>Override</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table id="stable"><thead><tr><th>Patchmanager</th><th>CloudVision hostname</th><th>Override</th><th>CV serial (for links)</th><th>Check</th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section id="tab-data" class="hidden">
@@ -401,8 +401,10 @@ function renderPort(c) {
     </div>
     <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul>
     ${compareTable(c.compare)}
-    ${c.cv_ports && c.cv_ports.length ? `<h2>CloudVision port status <span class="muted">(export)</span></h2><div class="tablewrap"><table><thead><tr><th>Interface</th><th>Status</th><th>Speed</th><th>Optic</th><th>Description</th><th>Last change</th></tr></thead><tbody>${
-      c.cv_ports.map(l => `<tr><td class="mono">${esc(l.intf)}</td><td><span class="tag ${l.status === "Connected" ? "ok" : l.status === "Down" ? "bad" : ""}">${esc(l.status)}</span></td><td>${esc(l.speed)}</td><td>${esc(l.optic)}</td><td>${esc(l.description)}</td><td class="muted">${esc(l.changed)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${c.cv_ports && c.cv_ports.length ? `<h2>CloudVision port status <span class="muted">· export of ${esc(c.cv_ports[0].exported || "?")} · not live</span>
+        ${cvLink(c.cv_switch, c.cv_ports[0].intf) ? cvA(c.cv_switch, c.cv_ports[0].intf, "open live in CloudVision ↗") : '<span class="muted" style="font-size:.8rem;font-weight:400">– add the CV serial of ' + esc(c.cv_switch) + ' under Switches for a link</span>'}</h2>
+      <div class="tablewrap"><table><thead><tr><th>Interface</th><th>Status</th><th>Speed</th><th>Optic</th><th>Description</th><th>Last link change</th><th></th></tr></thead><tbody>${
+      c.cv_ports.map(l => `<tr><td class="mono">${esc(l.intf)}</td><td><span class="tag ${l.status === "Connected" ? "ok" : l.status === "Down" ? "bad" : ""}">${esc(l.status)}</span></td><td><b>${esc(l.speed)}</b></td><td>${esc(l.optic)}</td><td>${esc(l.description)}</td><td class="muted">${esc(l.changed)}</td><td>${cvA(c.cv_switch, l.intf, "↗")}</td></tr>`).join("")}</tbody></table></div>` : ""}
     <div class="cols">
       <div><h2>Documented cable path <span class="muted">(Patchmanager)</span></h2>${c.paths.length ? c.paths.map(renderPath).join("") : '<p class="empty">No cable on this port in the Patchmanager export.</p>'}</div>
       <div>
@@ -464,6 +466,15 @@ async function copy(text, msg) {
   try { await navigator.clipboard.writeText(text); toast(msg); }
   catch { const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select(); document.execCommand("copy"); t.remove(); toast(msg); }
 }
+
+// ------------------------------------------------------------- CloudVision links
+function cvLink(host, intfName) {
+  const serial = STATUS && STATUS.serials && STATUS.serials[String(host || "").toUpperCase()];
+  const base = (STATUS && STATUS.cv_url || "").replace(/\/+$/, "");
+  return serial && base && intfName ? `${base}/cv/interface/overview/${encodeURIComponent(serial)}/${encodeURIComponent(intfName)}` : "";
+}
+const cvA = (host, intfName, label = "CloudVision ↗") => { const u = cvLink(host, intfName);
+  return u ? `<a class="lnk" href="${esc(u)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${esc(label)}</a>` : ""; };
 
 // ------------------------------------------------------------- Jira links, notes, manual worklist
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
@@ -772,7 +783,8 @@ function renderPorts() {
         <td>${esc(p.device_port)}</td><td>${p.panels.map(x => `<span class="pnl">${devA(x)}</span>`).join("")}</td>
         <td class="mono" style="font-size:.78rem">${esc(p.cables.join(" + "))}${p.length ? '<br><span class="muted">' + esc(p.length) + "</span>" : ""}</td>
         <td>${esc(p.iplist)}</td><td><span class="st ${p.status.replace(/ /g, "")}">${esc(p.status)}</span>${p.snags ? ' <span class="tag warn">' + p.snags + " snag</span>" : ""}${p.events ? ' <span class="tag bad">CV</span>' : ""}</td>
-        <td>${p.link ? `<span class="tag ${p.link_up ? "ok" : p.link === "Down" ? "bad" : ""}" title="${esc(p.cv_desc)}">${esc(p.link)}</span>` : '<span class="muted">–</span>'}</td></tr>`;
+        <td>${p.link ? `<span class="tag ${p.link_up ? "ok" : p.link === "Down" ? "bad" : ""}" title="${esc((p.cv_desc ? p.cv_desc + " · " : "") + "export " + p.cv_time)}">${esc(p.link)}</span>
+          ${p.speed ? '<span class="muted" style="font-size:.78rem">' + esc(p.speed.replace(" Gbps", "G")) + "</span>" : ""} ${cvA(p.cv_switch, p.cv_intf, "↗")}` : '<span class="muted">–</span>'}</td></tr>`;
     }
   }
   $("#ptable tbody").innerHTML = html || '<tr><td colspan="9" class="empty">Nothing for this filter.</td></tr>';
@@ -857,14 +869,17 @@ function renderSwitches() {
   $("#stable tbody").innerHTML = SW.map((s, i) => [s, i]).filter(([s]) => !q || (s.pm + " " + s.cv).toLowerCase().includes(q)).map(([s, i]) => `<tr>
     <td>${devA(s.pm)}</td><td class="mono">${esc(s.cv) || '<span class="muted">–</span>'}</td>
     <td><input type="text" data-i="${i}" value="${s.override ? esc(s.cv) : ""}" placeholder="hostname"></td>
+    <td><input type="text" data-serial="${i}" value="${esc(s.serial || "")}" placeholder="${s.cv ? "e.g. HNN22357273" : ""}" ${s.cv ? "" : "disabled"}></td>
     <td>${s.dup ? '<span class="tag bad">same hostname as another switch</span>' : ""}${s.in_cv === false ? '<span class="tag warn">not in CloudVision inventory</span>' : s.in_cv ? '<span class="tag ok">in CloudVision</span>' : ""}</td></tr>`).join("");
 }
 $("#sq").oninput = renderSwitches;
 $("#ssave").onclick = async () => {
   const ov = {}; SW.forEach(s => { if (s.override) ov[s.pm] = s.cv; });
-  document.querySelectorAll("#stable input").forEach(inp => { const s = SW[+inp.dataset.i]; if (inp.value.trim()) ov[s.pm] = inp.value.trim(); else delete ov[s.pm]; });
-  if (!confirm(`Save ${Object.keys(ov).length} hostname override(s) to switches.json on the server?`)) return;
-  try { await api("/api/switches", { method: "POST", body: JSON.stringify(ov) }); $("#smsg").textContent = "saved"; loadSwitches(); } catch (e) { $("#smsg").textContent = e.message; }
+  document.querySelectorAll("#stable input[data-i]").forEach(inp => { const s = SW[+inp.dataset.i]; if (inp.value.trim()) ov[s.pm] = inp.value.trim(); else delete ov[s.pm]; });
+  const ser = {}; document.querySelectorAll("#stable input[data-serial]").forEach(inp => { const s = SW[+inp.dataset.serial]; if (s.cv && inp.value.trim()) ser[s.cv] = inp.value.trim(); });
+  if (!confirm(`Save ${Object.keys(ov).length} hostname override(s) and ${Object.keys(ser).length} CloudVision serial(s) on the server?`)) return;
+  try { await api("/api/switches", { method: "POST", body: JSON.stringify(ov) }); await api("/api/serials", { method: "POST", body: JSON.stringify(ser) });
+    $("#smsg").textContent = "saved"; await loadStatus(); loadSwitches(); } catch (e) { $("#smsg").textContent = e.message; }
 };
 
 // ------------------------------------------------------------- data + import

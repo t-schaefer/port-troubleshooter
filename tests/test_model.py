@@ -70,12 +70,23 @@ class ModelTest(unittest.TestCase):
         self.assertIn("ok", [c[0] for c in card["checks"]])  # plan and cabling agree
 
     def test_modular_port_and_trunk(self):
-        card = self.s.port_card("VR 01", (3, 1, 1))
+        # chassis: CloudVision slot = Patchmanager LCxx + 2 (supervisors count in CloudVision)
+        card = self.s.port_card("VR 01", (5, 1, 1))
         self.assertTrue(card["modular"])
         p = card["paths"][0]
         ends = [h["name"] for h in p["hops"] if h["type"] == "end"]
         self.assertEqual(ends[-1], "SRV 01 : NIC1")
         self.assertTrue(any(h.get("assumed") for h in p["hops"]))
+
+    def test_chassis_slot_offset(self):
+        self.assertEqual(self.s.port_card("VR 01", (3, 1, 1))["paths"], [])   # LC01 has no cable here
+        self.assertEqual([n for n, _ in self.s.cabling.ports_of("VR 01")], [(5, 1)])
+        self.s.plan.append({"switch": "VR 01", "nums": [3, 1], "device": "SRV 01.NIC1 -- R", "equipment": "SRV 01",
+                            "eqport": "NIC1", "where": "R", "vlan": "", "cable": "", "sheet": "t", "row": 2, "free": False})
+        self.s._rebuild_names()
+        self.s._rebuild_names()   # twice: the shift must not add up
+        self.assertEqual(self.s.plan[-1]["nums"], [5, 1])
+        self.assertEqual(self.s.port_card("VR 01", (5, 1, 1))["plan"][0]["equipment"], "SRV 01")
 
     def test_dead_end_at_panel_is_open(self):
         card = self.s.port_card("SW 01", (14,))

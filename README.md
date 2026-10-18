@@ -14,6 +14,8 @@ It combines four exports that you load into the tool, plus live data if configur
 | **Patchmanager equipment** (CSV) | rack, U position, aliases, asset tags, defect ports |
 | **IP list** (View, xlsx) | which device *should* be on which switch port |
 | **Connectivity snagging list** (xlsx) | known problems, status, who fixed what |
+| **Neuron signal list** (xlsx) | every Neuron BNC: panel port, cables, endpoint, Cerebrum names |
+| **CloudVision port exports** (CSV, per switch) | link status, speed, optic, switch description |
 | **CloudVision** (optional, live) | current interface errors and link events |
 
 Loading files: click **⟳ Update data** at the top right and upload the exports from your
@@ -37,6 +39,8 @@ new installation starts empty.
 - **Notes & Jira.** Every port and device card has notes: who (type a name or pick one
   used before), a comment and a Jira link. Tick "also put it on the worklist" – or press
   **+ Add to worklist** – and it stays in the Worklist until someone marks it done.
+- **Open in CloudVision.** Port cards link straight to the port in CloudVision (needs the
+  switch's CV serial in the Switches tab).
 - **Hand it on.** Copy a job card for a technician, copy a link, print, or download a CSV.
 
 Tip: in a list, clicking a row opens the details on the right and the list stays where it
