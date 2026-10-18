@@ -248,6 +248,10 @@
     </label>
     <div id="importlog" class="muted" style="margin-top:8px"></div>
 
+    <h2>Speed check</h2>
+    <div class="ds"><div class="muted">Measures where time goes: on the server, on the network (transfer) or in this browser (drawing).
+      <button class="btn sm primary" id="speedbtn">Run speed check</button> <span id="speedver" class="muted"></span></div><div id="speedres"></div></div>
+
     <h2>CloudVision</h2>
     <div id="cvbox" class="ds"></div>
     <div id="cvlocate" class="hidden" style="margin-top:12px">
@@ -352,7 +356,8 @@ async function loadStatus() {
   const m = STATUS.store.meta, n = CORE.filter(k => m[k]).length, cv = STATUS.cv;
   const ncv = Object.keys(m).filter(k => k.startsWith("cvports:")).length;
   renderNoData(n);
-  $("#hdrstatus").innerHTML = `${n}/4 inputs${m.neuron ? " + Neuron list" : ""}${ncv ? " + " + ncv + " CV port export" + (ncv > 1 ? "s" : "") : ""} · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
+  $("#speedver").textContent = "version " + (STATUS.version || "?");
+  $("#hdrstatus").innerHTML = `<span title="running version">v ${esc(STATUS.version || "?")}</span> · ${n}/4 inputs${m.neuron ? " + Neuron list" : ""}${ncv ? " + " + ncv + " CV port export" + (ncv > 1 ? "s" : "") : ""} · CloudVision: ${cv.enabled ? (cv.error ? '<span class="err">error</span>' : '<span class="okt">' + cv.events + ' events</span>') : "not configured"}`;
   if (!$("#tab-data").classList.contains("hidden")) renderData();
 }
 
@@ -638,6 +643,31 @@ async function openHelp() {
   catch (e) { box.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 $("#helpbtn").onclick = openHelp;
+
+// ------------------------------------------------------------- speed check
+async function timed(path) {
+  const t = performance.now(), r = await fetch(path), txt = await r.text(), total = performance.now() - t;
+  return { path, total: Math.round(total), server: +(r.headers.get("X-Server-Ms") || 0), kb: Math.round(txt.length / 1024), json: txt };
+}
+async function speedCheck() {
+  const out = $("#speedres"); out.innerHTML = '<p class="muted">measuring…</p>';
+  const rows = [];
+  for (const p of ["/api/status", "/api/ports", "/api/mismatches", "/api/worklist", "/api/devices"]) rows.push(await timed(p));
+  const first = JSON.parse(rows[1].json).items[0];
+  if (first) rows.push(await timed(`/api/port?switch=${encodeURIComponent(first.switch)}&intf=${encodeURIComponent(intf(first.nums))}`));
+  if (first) rows.push(await timed("/api/device?name=" + encodeURIComponent(first.switch)));
+  let draw = 0;
+  if (PORTS) { const keepTab = CURTAB; const t = performance.now(); renderPorts(); draw = Math.round(performance.now() - t); }
+  const srv = rows.reduce((a, r) => a + r.server, 0), tot = rows.reduce((a, r) => a + r.total, 0), net = Math.max(0, tot - srv);
+  const verdict = srv > 1500 ? "The <b>server</b> is slow (computing). Send me the SLOW lines from service.log." :
+    net > 1500 ? "The <b>network</b> is slow (transfer between this PC and the server)." :
+    draw > 400 ? "The <b>browser</b> is slow at drawing the table." : "All parts are fast – if it still feels slow, tell me exactly which click.";
+  out.innerHTML = `<table style="margin-top:8px"><thead><tr><th>Request</th><th>Server</th><th>Total</th><th>Transfer / wait</th><th>Size (unpacked)</th></tr></thead><tbody>${
+    rows.map(r => `<tr><td class="mono">${esc(r.path.slice(0, 60))}</td><td>${r.server} ms</td><td><b>${r.total} ms</b></td><td>${Math.max(0, r.total - r.server)} ms</td><td>${r.kb} KB</td></tr>`).join("")}
+    <tr><td>Drawing the Ports table (this browser)</td><td></td><td><b>${draw} ms</b></td><td></td><td></td></tr></tbody></table>
+    <p>${verdict}</p><p class="muted">Version ${esc(STATUS.version)} · Python ${esc(STATUS.python)} on ${esc(STATUS.platform)} · ${esc(navigator.userAgent.replace(/^.*\) /, ""))}</p>`;
+}
+$("#speedbtn").onclick = speedCheck;
 
 // ------------------------------------------------------------- update from latest files
 let SRC = null;

@@ -18,6 +18,7 @@ live CloudVision events, side by side.
     python server.py --port 8110
 """
 import argparse
+import sys
 import csv
 import gzip
 import hashlib
@@ -100,6 +101,24 @@ MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Swi
                  ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
 
 
+def read_version():
+    """Git commit of this folder (or 'zip <date>' without git) - shown in the page to see whether
+    an update arrived."""
+    try:
+        head = (BASE_DIR / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = BASE_DIR / ".git" / head[5:].strip()
+            if ref.exists():
+                return ref.read_text().strip()[:7]
+            packed = (BASE_DIR / ".git" / "packed-refs").read_text()
+            m = re.search(r"^([0-9a-f]{40}) " + re.escape(head[5:].strip()) + "$", packed, re.M)
+            return m.group(1)[:7] if m else "?"
+        return head[:7]
+    except OSError:
+        return "zip " + datetime.fromtimestamp((BASE_DIR / "server.py").stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+
+
+VERSION = read_version()
 COMPUTE_LOCK = threading.Lock()     # the big lists: one at a time, without blocking other requests
 STATE = {"loading": True, "lists_ready": False}
 
@@ -510,16 +529,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, body, ctype="application/json", code=200):
+    def _send(self, body, ctype="application/json", code=200, pre_gz=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
-        gz = len(body) > 2048 and "gzip" in self.headers.get("Accept-Encoding", "")
+        gz = (pre_gz is not None or len(body) > 2048) and "gzip" in self.headers.get("Accept-Encoding", "")
         if gz:
-            body = gzip.compress(body, 5)
+            body = pre_gz if pre_gz is not None else gzip.compress(body, 5)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Server-Ms", "%.0f" % ((time.time() - getattr(self, "_t0", time.time())) * 1000))
+        self.send_header("Access-Control-Expose-Headers", "X-Server-Ms")
         if gz:
             self.send_header("Content-Encoding", "gzip")
         self.end_headers()
@@ -531,8 +552,15 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, msg, code=400):
         self._json({"error": msg}, code)
 
+    def _cached_json(self, cache, rows):
+        """Big lists: JSON + gzip built once per data state, then sent as bytes."""
+        if cache.get("body_key") is not cache.get("rows") or "body" not in cache:
+            raw = json.dumps({"items": rows}, default=str).encode("utf-8")
+            cache.update(body=raw, gz=gzip.compress(raw, 5), body_key=rows)
+        self._send(cache["body"], pre_gz=cache["gz"])
+
     def do_GET(self):
-        t = time.time()
+        t = self._t0 = time.time()
         try:
             self._get()
         finally:
@@ -541,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
                 log.warning("SLOW GET %s %.1fs", self.path[:120], dt)
 
     def do_POST(self):
-        t = time.time()
+        t = self._t0 = time.time()
         try:
             self._post()
         finally:
@@ -566,6 +594,7 @@ class Handler(BaseHTTPRequestHandler):
                     cfg = load_config()
                     self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": cfg.get("jira_url", ""),
                                 "loading": STATE["loading"], "lists_ready": STATE["lists_ready"],
+                                "version": VERSION, "python": sys.version.split()[0], "platform": sys.platform,
                                 "cv_url": cfg.get("cv_url", ""), "serials": load_serials()})
             elif u.path == "/api/search":
                 with LOCK:
@@ -591,9 +620,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self._err("bad cable")
                     self._json(STORE.cable_card(idx, q.get("side")))
             elif u.path == "/api/mismatches":
-                self._json({"items": [], "loading": True} if STATE["loading"] else {"items": mismatches()})
+                if STATE["loading"]:
+                    return self._json({"items": [], "loading": True})
+                rows = mismatches()
+                self._cached_json(MISMATCH_CACHE, rows)
             elif u.path == "/api/ports":
-                self._json({"items": [], "loading": True} if STATE["loading"] else {"items": ports_overview()})
+                if STATE["loading"]:
+                    return self._json({"items": [], "loading": True})
+                rows = ports_overview()
+                self._cached_json(PORTS_CACHE, rows)
             elif u.path == "/api/devices":
                 with LOCK:
                     self._json({"items": STORE.devices_overview()})
