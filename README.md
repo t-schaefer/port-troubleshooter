@@ -38,7 +38,8 @@ The tool opens on **Ports**; **? Help** (top right) shows this page.
 - **Mismatches.** Every port where the sources disagree, in three buckets:
   **Real mismatch** (check on site), **Documentation incomplete** (fill in what is missing),
   **Naming only** (same thing, written differently). Each row shows what every source says,
-  what it means and the next step.
+  what it means and the next step. **Not an error** (with reason and name) moves a finding
+  to "Ignored"; it comes back if the data changes.
 - **To shut.** Mark a device as *future use*: its switch ports are listed with ready-made
   Arista `shutdown` config. Ports where the documentation disagrees are never included.
 - **Notes & Jira.** Every port and device card has notes: who (type a name or pick one

@@ -20,6 +20,7 @@ switch: a switch whose Patchmanager ports sit under LCxx line cards is modular.
 """
 import csv
 import functools
+import hashlib
 import io
 import re
 from collections import Counter, defaultdict
@@ -1964,6 +1965,9 @@ class Store:
             if kind == "Neuron list vs Patchmanager" and m["severity"] != "error":
                 bucket = "incomplete"
             m["bucket"], m["order"] = bucket, order
+            # stable identity: the same finding on the same port with the same values
+            m["key"] = hashlib.sha1("|".join((kind, norm_name(m["switch"]), str(m.get("intf", "")), m.get("source", ""),
+                                              norm_name(m.get("says", "")), norm_name(m.get("ref_says", "")))).encode()).hexdigest()[:16]
             # what each source says about this switch port
             sources = []
             if m.get("nums"):

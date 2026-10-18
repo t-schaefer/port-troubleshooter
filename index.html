@@ -106,6 +106,8 @@
   .bucket { text-align: left; border: 2px solid var(--line); background: var(--card); color: var(--text); border-radius: 12px; padding: 10px 14px; cursor: pointer; font: inherit; display: grid; gap: 2px; }
   .bucket b { font-size: 1.5rem; line-height: 1.1; } .bucket span { font-weight: 600; } .bucket small { color: var(--muted); font-size: .78rem; }
   .bucket.bad b { color: var(--bad); } .bucket.warn b { color: var(--warn); } .bucket.naming b { color: var(--accent); }
+  .bucket.ign b { color: var(--muted); } .bucket.on.ign { border-color: var(--muted); background: var(--hl); }
+  .ex.ign { border-color: var(--muted); background: var(--hl); opacity: .85; }
   .bucket.on.bad { border-color: var(--bad); background: var(--badbg); } .bucket.on.warn { border-color: var(--warn); background: var(--warnbg); } .bucket.on.naming { border-color: var(--accent); background: var(--infobg); }
   td.srcs div { font-size: .85rem; padding: 1px 0; } td.srcs div.bad { color: var(--bad); } td.srcs div.naming { color: var(--accent); }
   .act { margin-top: 4px; font-weight: 600; font-size: .88rem; }
@@ -446,9 +448,12 @@ function renderPort(c) {
         <button class="btn sm primary" data-addwork>+ Add to worklist</button>
         <button class="btn sm" id="copy">Copy job card</button><button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div>
     </div>
-    ${c.explain && c.explain.length ? `<div class="explain">${c.explain.map(x => `<div class="ex ${BUCKET[x.bucket][2]}">
-        <span class="sev ${BUCKET[x.bucket][2] === "bad" ? "error" : BUCKET[x.bucket][2] === "warn" ? "warning" : "naming"}">${esc(BUCKET[x.bucket][0])}</span>
-        <b>${esc(x.kind)}</b><div>${esc(x.meaning)}</div>${x.action ? `<div class="act">→ ${esc(x.action)}</div>` : ""}</div>`).join("")}</div>`
+    ${c.explain && c.explain.length ? `<div class="explain">${c.explain.map((x, xi) => { const ig = IGN[x.key], b = ig ? "ignored" : x.bucket;
+        return `<div class="ex ${BUCKET[b][2]}">
+        <span class="sev ${BUCKET[b][2] === "bad" ? "error" : BUCKET[b][2] === "warn" ? "warning" : BUCKET[b][2] === "ign" ? "info" : "naming"}">${esc(BUCKET[b][0])}</span>
+        <b>${esc(x.kind)}</b><div>${esc(x.meaning)}</div>${x.action && !ig ? `<div class="act">→ ${esc(x.action)}</div>` : ""}
+        <div style="margin-top:6px">${ig ? `<span class="muted">${ignInfo(x.key)}</span> <button class="btn sm" data-unign="${xi}">Undo</button>`
+          : `<button class="btn sm" data-ign="${xi}">Not an error</button>`}</div></div>`; }).join("")}</div>`
       : (c.compare && c.compare.length > 1 ? '<div class="explain"><div class="ex ok"><b>No mismatch</b> – the sources agree on this port.</div></div>' : "")}
     <details class="morechecks" ${c.explain && c.explain.length && !c.checks.some(x => x[0] === "bad" && /DEFECT|FUTURE|to be checked/.test(x[1])) ? "" : "open"}><summary class="muted">All checks (${c.checks.length})</summary>
     <ul class="checks">${c.checks.map(([lvl, t]) => `<li class="${lvl}">${esc(t)}</li>`).join("")}</ul></details>
@@ -471,6 +476,8 @@ function renderPort(c) {
     <div data-notes></div>
   </div>`;
   notesSection(box, { type: "port", switch: c.switch, nums: c.nums });
+  box.querySelectorAll(".explain button[data-ign]").forEach(b => b.onclick = () => setIgnore(c.explain[+b.dataset.ign], true).catch(e => toast(e.message)));
+  box.querySelectorAll(".explain button[data-unign]").forEach(b => b.onclick = () => setIgnore(c.explain[+b.dataset.unign], false).catch(e => toast(e.message)));
   box.querySelector("#prev").onclick = () => stepPort(-1); box.querySelector("#next").onclick = () => stepPort(1);
   box.querySelector("#portpick").onchange = e => openPort(c.switch, e.target.value);
   if (CURTAB === "ports") markPortRow(c);
@@ -944,21 +951,43 @@ async function loadMis() {
   if (!MIS) { $("#mfoot").textContent = "comparing all ports…"; }
   else { renderMis(); }
   try { MIS = (await api("/api/mismatches")).items; } catch (e) { $("#mfoot").textContent = e.message; return; }
-  $("#miscount").textContent = MIS.filter(m => m.bucket === "real").length; renderMis();
+  await loadIgnores();
+  $("#miscount").textContent = MIS.filter(m => bucketOf(m) === "real").length; renderMis();
 }
 const BUCKET = {
   real: ["Real mismatch", "Documents and / or reality disagree – check on site.", "bad"],
   incomplete: ["Documentation incomplete", "Something is missing in a document – fill it in.", "warn"],
   naming: ["Naming only", "Technically the same, only written differently – fix the spelling when convenient.", "naming"],
+  ignored: ["Ignored", "Marked “not an error” – with reason and name; can be undone.", "ign"],
 };
+let IGN = {};
+async function loadIgnores() { try { IGN = (await api("/api/ignores")).ignores; } catch {} }
+const bucketOf = m => IGN[m.key] ? "ignored" : m.bucket;
+async function setIgnore(m, on) {
+  if (on) {
+    const reason = (prompt(`Not an error?\n${m.switch} ${m.intf} – ${m.kind}\n\nWhy is this OK (e.g. "intended", "temporary patch", "documents are right")?`, "") || "").trim();
+    if (!reason) return;
+    const user = await askUser("Your name:"); if (!user) return;
+    await api("/api/ignores", { method: "POST", body: JSON.stringify({ key: m.key, reason, user, kind: m.kind, switch: m.switch, intf: m.intf, says: m.says }) });
+    toast("Marked as not an error");
+  } else {
+    if (!confirm("Show this mismatch again?")) return;
+    await api("/api/ignores", { method: "POST", body: JSON.stringify({ key: m.key, action: "remove" }) });
+  }
+  await loadIgnores();
+  if (MIS) renderMis();
+  if (CURRENT && $("#drawer").classList.contains("open") && (DETAIL || "").startsWith("port=")) openPort(CURRENT.switch, CURRENT.intf);
+  else if (CURRENT && CURTAB === "port") openPort(CURRENT.switch, CURRENT.intf);
+}
+function ignInfo(key) { const i = IGN[key]; return i ? `ignored by <b>${esc(i.user)}</b> (${esc(i.at.slice(0, 10))}): ${esc(i.reason)}` : ""; }
 let mbucket = store.get("mbucket", "real"), mkind = "";
 function renderMis() {
   const q = $("#mq").value.trim().toLowerCase(), byB = {}, byK = {};
-  MIS.forEach(m => byB[m.bucket] = (byB[m.bucket] || 0) + 1);
+  MIS.forEach(m => { const b = bucketOf(m); byB[b] = (byB[b] || 0) + 1; });
   $("#mbuckets").innerHTML = Object.entries(BUCKET).map(([k, [t, d, c]]) => `<button class="bucket ${c} ${k === mbucket ? "on" : ""}" data-b="${k}">
       <b>${byB[k] || 0}</b><span>${t}</span><small>${d}</small></button>`).join("");
   $("#mbuckets").querySelectorAll(".bucket").forEach(b => b.onclick = () => { mbucket = b.dataset.b; mkind = ""; store.set("mbucket", mbucket); mLimit = PAGE; renderMis(); });
-  const inB = MIS.filter(m => m.bucket === mbucket);
+  const inB = MIS.filter(m => bucketOf(m) === mbucket);
   inB.forEach(m => byK[m.kind] = (byK[m.kind] || 0) + 1);
   $("#mchips").innerHTML = [["", "All " + inB.length], ...Object.entries(byK).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, k + " " + n])]
     .map(([k, l]) => `<button class="chip ${k === mkind ? "on" : ""}" data-s="${esc(k)}">${esc(l)}</button>`).join("");
@@ -971,7 +1000,11 @@ function renderMis() {
     <td><span class="sev ${BUCKET[m.bucket][2] === "bad" ? "error" : BUCKET[m.bucket][2] === "warn" ? "warning" : "naming"}">${esc(m.kind)}</span></td>
     <td class="srcs">${(m.sources && m.sources.length ? m.sources : [{ source: m.source, says: m.says, verdict: "" }]).map(x =>
       `<div class="${vcls(x.verdict)}"><span class="muted">${esc(x.source)}:</span> ${esc(x.says)}</div>`).join("")}</td>
-    <td>${esc(m.meaning)}${m.action ? `<div class="act">→ ${esc(m.action)}</div>` : ""}</td></tr>`).join("") || '<tr><td colspan="4" class="empty">Nothing for this filter.</td></tr>';
+    <td>${esc(m.meaning)}${m.action ? `<div class="act">→ ${esc(m.action)}</div>` : ""}
+      <div style="margin-top:6px">${IGN[m.key] ? `<span class="muted">${ignInfo(m.key)}</span> <button class="btn sm" data-unign="${MIS.indexOf(m)}">Undo</button>`
+        : `<button class="btn sm" data-ign="${MIS.indexOf(m)}" title="Accept this as OK – it moves to “Ignored”">Not an error</button>`}</div></td></tr>`).join("") || '<tr><td colspan="4" class="empty">Nothing for this filter.</td></tr>';
+  $("#mtable tbody").querySelectorAll("button[data-ign]").forEach(b => b.onclick = () => setIgnore(MIS[+b.dataset.ign], true).catch(e => toast(e.message)));
+  $("#mtable tbody").querySelectorAll("button[data-unign]").forEach(b => b.onclick = () => setIgnore(MIS[+b.dataset.unign], false).catch(e => toast(e.message)));
   if (rows.length > mLimit) $("#mtable tbody").insertAdjacentHTML("beforeend", `<tr><td colspan="4" style="text-align:center;padding:12px"><button class="btn" id="mmore">Show more</button> <span class="muted">${mLimit} of ${rows.length} shown</span></td></tr>`);
   const mm = $("#mmore"); if (mm) mm.onclick = () => { mLimit += PAGE * 2; renderMis(); };
   const act = [mkind && "<b>" + esc(mkind) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
@@ -1055,7 +1088,7 @@ $("#locform").onsubmit = async e => {
   } catch (err) { $("#locres").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
 };
 
-loadStatus().then(() => { route(); loadWork(); loadShutCount(); scanSources(); });
+loadStatus().then(async () => { await loadIgnores(); route(); loadWork(); loadShutCount(); scanSources(); });
 setInterval(loadStatus, 30000);
 </script>
 </body>

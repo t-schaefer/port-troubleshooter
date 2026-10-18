@@ -49,6 +49,7 @@ FUTURE_FILE = BASE_DIR / "future.json"
 SERIALS_FILE = BASE_DIR / "serials.json"
 SERIALS_EXAMPLE = BASE_DIR / "serials.example.json"
 NOTES_FILE = BASE_DIR / "notes.json"
+IGNORES_FILE = BASE_DIR / "ignores.json"
 TOKEN_FILE = BASE_DIR / "cv_token.txt"
 LOG_FILE = BASE_DIR / "service.log"
 MAX_UPLOAD = 60 * 1024 * 1024
@@ -195,10 +196,19 @@ def same_target(a, b):
     return model.norm_name(a["device"]) == model.norm_name(b["device"])
 
 
+def load_ignores():
+    """{mismatch key: {reason, user, at, kind, switch, intf, says}} - 'not an error' marks."""
+    try:
+        return json.loads(IGNORES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def known_users():
     """Names for the user pick list: everyone who wrote a note, plus the snagging list's 'who'."""
     names = {n.get("user", "").strip() for n in load_notes()} | {n.get("done_by", "").strip() for n in load_notes()}
     names |= {s.get("who", "").strip() for s in STORE.snags}
+    names |= {i.get("user", "").strip() for i in load_ignores().values()}
     return sorted((n for n in names if n and len(n) <= 60 and not n.startswith("#") and n != "0"), key=str.lower)
 
 
@@ -616,7 +626,7 @@ class Handler(BaseHTTPRequestHandler):
                             if m.get("nums"):
                                 idx.setdefault((model.norm_name(m["switch"]), tuple(m["nums"])), []).append(m)
                         MISMATCH_CACHE.update(by_port=idx, idx_of=MISMATCH_CACHE["rows"])
-                    card["explain"] = [{k: m.get(k) for k in ("bucket", "kind", "meaning", "action")}
+                    card["explain"] = [{k: m.get(k) for k in ("bucket", "kind", "meaning", "action", "key", "switch", "intf", "says")}
                                        for m in idx.get((model.norm_name(card["switch"]), tuple(card["nums"])), [])]
                 self._json(card)
             elif u.path == "/api/device":
@@ -653,6 +663,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err(str(e))
                 notes = [n for n in load_notes() if same_target(n["target"], tgt)]
                 self._json({"notes": sorted(notes, key=lambda n: n.get("created", ""), reverse=True), "users": known_users()})
+            elif u.path == "/api/ignores":
+                self._json({"ignores": load_ignores()})
             elif u.path == "/api/sources":
                 self._json(scan_sources())
             elif u.path == "/api/chain":
@@ -681,7 +693,10 @@ class Handler(BaseHTTPRequestHandler):
                     elif u.path == "/export/worklist.csv":
                         body, name = to_csv(worklist(), WORKLIST_COLS), "worklist"
                     elif u.path == "/export/mismatches.csv":
-                        body, name = to_csv(mismatches(), MISMATCH_COLS), "mismatches"
+                        ign = load_ignores()
+                        rows = [dict(m, ignored="%s (%s): %s" % (ign[m["key"]]["user"], ign[m["key"]]["at"][:10], ign[m["key"]]["reason"])
+                                     if m.get("key") in ign else "") for m in mismatches()]
+                        body, name = to_csv(rows, MISMATCH_COLS + [("ignored", "Ignored (not an error)")]), "mismatches"
                     elif u.path == "/export/shut.csv":
                         body, name = to_csv(STORE.ports_to_shut(), SHUT_COLS), "ports-to-shut"
                     else:
@@ -855,6 +870,30 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         return self._err("unknown action")
                     save_notes(notes)
+                self._json({"ok": True})
+            elif u.path == "/api/ignores":
+                data = json.loads(body or b"{}")
+                key = str(data.get("key", ""))
+                if not re.fullmatch(r"[0-9a-f]{16}", key):
+                    return self._err("bad key")
+                with NOTES_LOCK:
+                    ign = load_ignores()
+                    if data.get("action") == "remove":
+                        ign.pop(key, None)
+                        log.info("IGNORE removed %s", key)
+                    else:
+                        user = str(data.get("user", "")).strip()[:60]
+                        reason = str(data.get("reason", "")).strip()[:300]
+                        if not user:
+                            return self._err("enter your name")
+                        if not reason:
+                            return self._err("enter a reason")
+                        ign[key] = {"reason": reason, "user": user, "at": datetime.now().isoformat(timespec="seconds"),
+                                    **{k: str(data.get(k, ""))[:200] for k in ("kind", "switch", "intf", "says")}}
+                        log.info("IGNORE %s by %s: %s %s %s - %s", key, user, data.get("switch"), data.get("intf"), data.get("kind"), reason)
+                    tmp = IGNORES_FILE.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(ign, indent=1, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(IGNORES_FILE)
                 self._json({"ok": True})
             elif u.path == "/api/serials":
                 data = json.loads(body or b"{}")
