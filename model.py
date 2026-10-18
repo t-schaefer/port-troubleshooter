@@ -1941,7 +1941,95 @@ class Store:
                             "nums": [], "device": r["device"], "severity": sev, "kind": "Neuron list vs Patchmanager",
                             "source": "Neuron signal list", "says": text, "reference": "Patchmanager", "ref_says": "",
                             "detail": "%s r%s" % (r["sheet"], r["row"])})
-        return out
+        return self._explain(out)
+
+    # -- plain-language interpretation of a mismatch ------------------------------------------
+    BUCKETS = {   # kind -> (bucket, order)
+        "different device": ("real", 1), "two cables on one port": ("real", 2), "different port": ("real", 3),
+        "documented, link down": ("real", 4), "future use, link up": ("real", 5),
+        "different device (trunk assumed)": ("real", 6), "Neuron list vs Patchmanager": ("real", 7),
+        "Neuron list vs Patchmanager - numbering shift": ("real", 8),
+        "link up, not documented": ("incomplete", 1), "in IP list, no cable in Patchmanager": ("incomplete", 2),
+        "cabling ends at panel": ("incomplete", 3), "IP list without device name": ("incomplete", 4),
+        "CloudVision hostname not mapped": ("incomplete", 5), "naming only (same device)": ("naming", 1),
+    }
+
+    def _explain(self, rows):
+        """Adds to every mismatch: bucket (real | incomplete | naming), 'sources' (what each
+        source says about this port, side by side), 'meaning' and 'action' in plain words."""
+        cards = {}
+        for m in rows:
+            kind = m["kind"]
+            bucket, order = self.BUCKETS.get(kind, ("incomplete", 9))
+            if kind == "Neuron list vs Patchmanager" and m["severity"] != "error":
+                bucket = "incomplete"
+            m["bucket"], m["order"] = bucket, order
+            # what each source says about this switch port
+            sources = []
+            if m.get("nums"):
+                key = (norm_name(m["switch"]), tuple(m["nums"]))
+                if key not in cards:
+                    cards[key] = self.port_card(m["switch"], m["nums"], with_shut=False)
+                card = cards[key]
+                for r in card["compare"]:
+                    sources.append({"source": r["source"], "says": ("%s %s" % (r["device"], r["port"] or "")).strip(),
+                                    "verdict": r["verdict"]})
+                lanes = card.get("cv_ports") or []
+                if lanes:
+                    l0 = lanes[0]
+                    sources.append({"source": "CloudVision link", "says": "%s %s (export %s)" % (
+                        l0["status"], l0["speed"], l0["exported"]), "verdict": "ok" if l0["status"] == "Connected" else "device"})
+            m["sources"] = sources
+            port = "%s %s" % (m["switch"], m["intf"])
+            pm = next((x["says"] for x in sources if x["source"] == "Patchmanager cabling" and x["verdict"] == "ref"), m.get("ref_says", ""))
+            says, src = m.get("says", ""), m.get("source", "")
+            if kind == "different device":
+                m["meaning"] = "%s expects %s on %s, but the Patchmanager cable goes to %s. Either the cable is patched to the wrong device, or one document is wrong." % (src, says, port, pm or m.get("ref_says"))
+                m["action"] = "Check on site what is plugged into %s, then correct the wrong document." % port
+            elif kind == "two cables on one port":
+                m["meaning"] = "Patchmanager documents two different cables on the one switch port %s (%s and %s) - physically only one is possible." % (port, pm, says)
+                m["action"] = "Check on site which cable is really on %s and delete the other one in Patchmanager." % port
+            elif kind == "different port":
+                m["meaning"] = "Same device, different device port: %s says %s, Patchmanager says %s." % (src, says, pm)
+                m["action"] = "Check which port of the device is really cabled to %s and correct the document." % port
+            elif kind == "different device (trunk assumed)":
+                m["meaning"] = "%s expects %s, but the Patchmanager path to %s crosses a fibre trunk whose strand is not documented, so the far end is a guess." % (src, says, pm)
+                m["action"] = "Check the trunk / cassette on site and document the strand in Patchmanager - then the tool can compare properly."
+            elif kind == "documented, link down":
+                m["meaning"] = "A device is documented on %s, but CloudVision shows no link there (at the export time)." % port
+                m["action"] = "Check power, cable, optics and patching on site - or update the documentation if the device is gone."
+            elif kind == "future use, link up":
+                m["meaning"] = "The device on %s is marked as future use, but the link is up." % port
+                m["action"] = "Shut the port (see To shut) - or clear the future-use mark if the device is live."
+            elif kind == "link up, not documented":
+                m["meaning"] = "CloudVision shows a live link on %s, but no document says what is connected." % port
+                m["action"] = "Find out what is plugged in (CloudVision LLDP / MAC) and document it in Patchmanager and the IP list."
+            elif kind == "in IP list, no cable in Patchmanager":
+                m["meaning"] = "The IP list plans %s on %s, but Patchmanager has no cable on this port." % (says, port)
+                m["action"] = "Add the cable in Patchmanager - or remove the line from the IP list if it is no longer planned."
+            elif kind == "cabling ends at panel":
+                m["meaning"] = "The Patchmanager path from %s stops at a patch panel (%s); what is behind it is not documented." % (port, pm)
+                m["action"] = "Complete the patching in Patchmanager from that panel to the device."
+            elif kind == "IP list without device name":
+                m["meaning"] = "The IP list has a line for %s, but without a device name (%s)." % (port, says)
+                m["action"] = "Add the device name in the IP list."
+            elif kind == "CloudVision hostname not mapped":
+                m["meaning"] = "The switch description names %s, which has no Patchmanager name yet." % says
+                m["action"] = "Add the hostname under Switches (Override column)."
+            elif kind == "naming only (same device)":
+                m["meaning"] = "Technically the same: %s writes %s, Patchmanager %s." % (src, says, pm)
+                m["action"] = "Optional: align the spelling in %s so searches find both." % src
+            elif kind == "Neuron list vs Patchmanager - numbering shift":
+                m["meaning"] = says
+                m["action"] = "Check on site which numbering is right (Neuron list or Patchmanager) and correct the other one."
+            elif kind == "Neuron list vs Patchmanager":
+                m["meaning"] = "The Neuron signal list and Patchmanager disagree on %s: %s." % (m["intf"], says)
+                m["action"] = "Check the BNC cable on site and correct the Neuron list or Patchmanager." if m["bucket"] == "real" \
+                    else "Add / complete the cable in Patchmanager."
+            else:
+                m["meaning"], m["action"] = says, ""
+        rows.sort(key=lambda m: ({"real": 0, "incomplete": 1, "naming": 2}[m["bucket"]], m["order"], norm_name(m["switch"]), m.get("nums") or []))
+        return rows
 
     def status(self):
         return {"meta": self.meta, "switches": len(self.switches()), "mapping": len(self.mapping),

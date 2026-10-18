@@ -96,7 +96,7 @@ PORT_COLS = [("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVi
              ("future", "Future device")]
 DEVICE_COLS = [("device", "Device"), ("kind", "Type"), ("template", "Template"), ("location", "Location"),
                ("position", "Position"), ("alias", "Alias"), ("links", "Connections"), ("future", "Future use")]
-MISMATCH_COLS = [("severity", "Severity"), ("kind", "Mismatch"), ("switch", "Switch (Patchmanager)"),
+MISMATCH_COLS = [("bucket", "Bucket"), ("severity", "Severity"), ("kind", "Mismatch"), ("meaning", "Meaning"), ("action", "Next step"), ("switch", "Switch (Patchmanager)"),
                  ("cv_switch", "Switch (CloudVision)"), ("intf", "Interface"), ("source", "Source"), ("says", "Source says"),
                  ("reference", "Compared with"), ("ref_says", "That says"), ("detail", "Detail")]
 
@@ -589,6 +589,8 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     md = "# Help\n\nREADME.md not found."
                 self._json({"html": md_to_html(md)})
+            elif u.path == "/api/status" and STATE["loading"]:
+                self._json({"loading": True, "version": VERSION})     # do not wait for the data lock
             elif u.path == "/api/status":
                 with LOCK:
                     cfg = load_config()
@@ -604,7 +606,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not SWITCH_RE.match(sw) or not nums:
                     return self._err("bad switch / interface")
                 with LOCK:
-                    self._json(STORE.port_card(sw, nums, CV["events"], nav=True))
+                    card = STORE.port_card(sw, nums, CV["events"], nav=True)
+                # the plain-language interpretation from the mismatch list (same wording everywhere)
+                if MISMATCH_CACHE.get("rows"):
+                    idx = MISMATCH_CACHE.get("by_port")
+                    if MISMATCH_CACHE.get("idx_of") is not MISMATCH_CACHE["rows"]:
+                        idx = {}
+                        for m in MISMATCH_CACHE["rows"]:
+                            if m.get("nums"):
+                                idx.setdefault((model.norm_name(m["switch"]), tuple(m["nums"])), []).append(m)
+                        MISMATCH_CACHE.update(by_port=idx, idx_of=MISMATCH_CACHE["rows"])
+                    card["explain"] = [{k: m.get(k) for k in ("bucket", "kind", "meaning", "action")}
+                                       for m in idx.get((model.norm_name(card["switch"]), tuple(card["nums"])), [])]
+                self._json(card)
             elif u.path == "/api/device":
                 name = q.get("name", "").strip()
                 if not name or len(name) > 120:

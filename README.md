@@ -35,7 +35,10 @@ The tool opens on **Ports**; **? Help** (top right) shows this page.
 - **Signal chain.** Follows a device's cables through panels *and* devices and lists every
   faulty link: open snag, CloudVision error, defect port, documentation mismatch.
 - **Worklist.** Everything open (snagging list plus CloudVision) in one sortable list.
-- **Mismatches.** Every port where Patchmanager, the IP list and the snagging list disagree.
+- **Mismatches.** Every port where the sources disagree, in three buckets:
+  **Real mismatch** (check on site), **Documentation incomplete** (fill in what is missing),
+  **Naming only** (same thing, written differently). Each row shows what every source says,
+  what it means and the next step.
 - **To shut.** Mark a device as *future use*: its switch ports are listed with ready-made
   Arista `shutdown` config. Ports where the documentation disagrees are never included.
 - **Notes & Jira.** Every port and device card has notes: who (type a name or pick one
