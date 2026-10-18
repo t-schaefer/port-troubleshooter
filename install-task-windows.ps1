@@ -52,7 +52,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-    -Description "Port Troubleshooter on port $Port - Patchmanager / port plan / snagging list / CloudVision. Runs as SYSTEM." | Out-Null
+    -Description "Port Troubleshooter on port $Port - Patchmanager / IP list / snagging list / CloudVision. Runs as SYSTEM." | Out-Null
 
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 3

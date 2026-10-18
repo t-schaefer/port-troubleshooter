@@ -1,11 +1,11 @@
 """
 Port Troubleshooter - one page to troubleshoot a switch port: documented cable path
-(Patchmanager), what the port plan expects there, the snagging-list history and the
+(Patchmanager), what the IP list expects there, the snagging-list history and the
 live CloudVision events, side by side.
 
 - Standard library only (Python 3.8+), ThreadingHTTPServer, default port 8102.
 - Inputs are imported in the page (or dropped into data/): Patchmanager cable export (CSV),
-  Patchmanager all-equipment export (CSV), IP list "View" (xlsx, port plan), Connectivity
+  Patchmanager all-equipment export (CSV), IP list "View" (xlsx), Connectivity
   snagging list (xlsx). The type is detected from the content. The last import of each type
   is kept in data/ (git-ignored) and loaded again at start.
 - CloudVision (read-only, optional): token in env CV_TOKEN or cv_token.txt (git-ignored),
@@ -20,6 +20,7 @@ live CloudVision events, side by side.
 import argparse
 import csv
 import gzip
+import hashlib
 import io
 import json
 import logging
@@ -65,6 +66,8 @@ STORE = model.Store()
 CV = {"enabled": False, "url": "", "error": "", "devices": [], "events": [], "devices_at": "",
       "events_at": "", "raw_sample": ""}
 CV_WAKE = threading.Event()
+KIND_NAMES = {"cables": "Patchmanager cables", "equipment": "Patchmanager equipment", "portplan": "IP list",
+              "snags": "snagging list"}
 MISMATCH_CACHE = {"key": None, "rows": []}
 
 WORKLIST_COLS = [("source", "Source"), ("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"),
@@ -130,7 +133,7 @@ def load_saved():
         if f.is_file():
             try:
                 STORE.load(kind, m["file"], f.read_bytes(), when=m.get("loaded"))
-                log.info("loaded %s: %s (%s)", kind, m["file"], STORE.meta[kind]["count"])
+                log.info("loaded %s: %s (%s)", KIND_NAMES.get(kind, kind), m["file"], STORE.meta[kind]["count"])
             except Exception as e:  # a broken file must not stop the service
                 log.warning("could not load %s from %s: %s", kind, f, e)
     try:
@@ -143,7 +146,76 @@ def load_saved():
         pass
 
 
-def import_file(filename, data):
+# ---------------------------------------------------------------- update from latest files
+# Folders the service looks in for new exports (config.json "import_dirs", relative to this
+# folder or absolute). Only files in these folders can be imported this way - the browser
+# picks a file by an id from the last scan, never by path.
+SCAN = {"files": {}, "kinds": {}}          # id -> path;  (path, mtime, size) -> kind
+
+
+def import_dirs():
+    dirs = load_config().get("import_dirs") or ["inbox"]
+    out = []
+    for d in dirs:
+        p = Path(os.path.expanduser(str(d)))
+        p = p if p.is_absolute() else BASE_DIR / p
+        out.append(p)
+    return out
+
+
+def scan_sources(limit_per_dir=300):
+    """Newest candidate files per input type in the import folders."""
+    cands = []
+    for d in import_dirs():
+        if not d.is_dir():
+            continue
+        try:
+            files = [f for f in d.iterdir() if f.is_file() and f.suffix.lower() in (".csv", ".xlsx", ".xlsm")
+                     and not f.name.startswith(("~$", "."))]
+        except OSError:
+            continue
+        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        for f in files[:limit_per_dir]:
+            st = f.stat()
+            key = (str(f), st.st_mtime, st.st_size)
+            if key not in SCAN["kinds"]:
+                try:
+                    SCAN["kinds"][key] = model.detect_kind(f.name, f.read_bytes() if st.st_size < MAX_UPLOAD else b"")
+                except Exception:
+                    SCAN["kinds"][key] = None
+            kind = SCAN["kinds"][key]
+            if kind:
+                fid = hashlib.sha1(("%s|%s|%s" % key).encode()).hexdigest()[:16]
+                SCAN["files"][fid] = str(f)
+                cands.append({"id": fid, "kind": kind, "name": f.name, "folder": str(f.parent), "size": st.st_size,
+                              "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"), "_key": key})
+    out = {}
+    try:
+        meta = json.loads(META_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    for kind in ("cables", "equipment", "portplan", "snags"):
+        mine = sorted((c for c in cands if c["kind"] == kind), key=lambda c: c["mtime"], reverse=True)[:5]
+        src = meta.get(kind, {}).get("source")
+        for c in mine:
+            c["loaded"] = bool(src) and src.get("path") == c["_key"][0] and src.get("mtime") == c["_key"][1] \
+                and src.get("size") == c["_key"][2]
+            c.pop("_key")
+        newest = mine[0] if mine else None
+        cur = STORE.meta.get(kind)
+        if not newest or newest["loaded"]:
+            newer = False
+        elif src:                       # imported from a folder before: compare file dates
+            newer = newest["mtime"] > src.get("mtime_iso", "")
+        elif cur:                       # uploaded by hand: newer when the file is younger than that upload
+            newer = newest["mtime"] > cur.get("loaded", "")
+        else:
+            newer = True
+        out[kind] = {"current": cur, "candidates": mine, "newer": newer}
+    return {"dirs": [str(d) + ("" if d.is_dir() else "  (missing)") for d in import_dirs()], "kinds": out}
+
+
+def import_file(filename, data, source=None):
     kind = model.detect_kind(filename, data)
     if not kind:
         raise ValueError("Not recognised. Expected: Patchmanager cable export (CSV), Patchmanager equipment "
@@ -160,8 +232,10 @@ def import_file(filename, data):
         except (OSError, ValueError):
             meta = {}
         meta[kind] = {"file": filename, "stored": stored, "loaded": STORE.meta[kind]["loaded"]}
+        if source:
+            meta[kind]["source"] = source
         META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    log.info("IMPORT %s: %s (%d rows)", kind, filename, n)
+    log.info("IMPORT %s: %s (%d rows)", KIND_NAMES.get(kind, kind), filename, n)
     return kind, n
 
 
@@ -264,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/mismatches":
                 with LOCK:
                     self._json({"items": mismatches()})
+            elif u.path == "/api/sources":
+                self._json(scan_sources())
             elif u.path == "/api/chain":
                 name = q.get("device", "").strip()
                 if not name or len(name) > 120:
@@ -355,6 +431,28 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     return self._err(str(e))
                 self._json({"kind": kind, "count": count})
+            elif u.path == "/api/import-latest":
+                data = json.loads(body or b"{}")
+                ids = data.get("ids") or []
+                if not isinstance(ids, list) or not ids or len(ids) > 10:
+                    return self._err("choose 1-10 files")
+                done = []
+                for fid in ids:
+                    path = SCAN["files"].get(str(fid))
+                    if not path:
+                        return self._err("file list is out of date - reopen the menu")
+                    f = Path(path)
+                    if not any(f.parent == d for d in import_dirs()):
+                        return self._err("file is not in an import folder")
+                    st = f.stat()
+                    try:
+                        kind, count = import_file(f.name, f.read_bytes(), source={
+                            "path": str(f), "mtime": st.st_mtime, "size": st.st_size,
+                            "mtime_iso": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds")})
+                    except ValueError as e:
+                        return self._err("%s: %s" % (f.name, e))
+                    done.append({"file": f.name, "kind": kind, "count": count})
+                self._json({"imported": done})
             elif u.path == "/api/switches":
                 data = json.loads(body or b"{}")
                 if not isinstance(data, dict) or len(data) > 500:
@@ -404,6 +502,9 @@ def main():
     ap.add_argument("--port", type=int, default=8102)
     args = ap.parse_args()
     load_config()
+    for d in import_dirs():
+        if d == BASE_DIR / "inbox":
+            d.mkdir(exist_ok=True)
     load_saved()
     threading.Thread(target=cv_loop, daemon=True).start()
     ThreadingHTTPServer.request_queue_size = 128

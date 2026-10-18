@@ -1,14 +1,18 @@
 <#
 .SYNOPSIS
   Updates the Port Troubleshooter and restarts its task (PortTroubleshooterService):
-  stops the task (and a leftover python running this server.py), `git pull --ff-only`,
-  starts the task again. Usually started by double-clicking Update-PortTroubleshooter.bat.
-  data\, config.json, switches.json, cv_token.txt and service.log are not in git and are never touched.
+  stops the task (and a leftover python running this server.py), updates the files -
+  `git pull --ff-only` in a git clone, otherwise GitHub's main.zip copied over (nothing
+  deleted) - and starts the task again. Usually started by double-clicking
+  Update-PortTroubleshooter.bat (self-elevates).
+  data\, config.json, switches.json, future.json, cv_token.txt and service.log are not in
+  git / the zip and are never touched.
 #>
 $ErrorActionPreference = "Stop"
 $TaskName = "PortTroubleshooterService"
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerPy = Join-Path $RepoDir "server.py"
+$ZipUrl = "https://github.com/t-schaefer/port-troubleshooter/archive/refs/heads/main.zip"
 Set-Location $RepoDir
 Write-Host "Folder: $RepoDir"
 
@@ -29,10 +33,25 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%'" |
 
 $updated = $false
 try {
-    if (-not (Test-Path (Join-Path $RepoDir ".git"))) { throw "this folder is not a git clone" }
-    Write-Host "git pull --ff-only ..."
-    git -c "safe.directory=$($RepoDir -replace '\\','/')" pull --ff-only
-    if ($LASTEXITCODE -ne 0) { throw "git pull failed (local changes or diverged branch?)" }
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    if ($git -and (Test-Path (Join-Path $RepoDir ".git"))) {
+        Write-Host "git pull --ff-only ..."
+        # safe.directory: also works when the clone belongs to another user (e.g. run as SYSTEM from the landing page)
+        git -c "safe.directory=$($RepoDir -replace '\\','/')" pull --ff-only
+        if ($LASTEXITCODE -ne 0) { throw "git pull failed (local changes or diverged branch?)" }
+    } else {
+        Write-Host "No git clone here - downloading $ZipUrl ..."
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $tmp = Join-Path $env:TEMP ("porttrouble-update-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        $zip = Join-Path $tmp "main.zip"
+        Invoke-WebRequest -Uri $ZipUrl -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        $src = Get-ChildItem -Path $tmp -Directory | Select-Object -First 1
+        robocopy $src.FullName $RepoDir /E /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "copying the downloaded files failed (robocopy $LASTEXITCODE)" }
+        Remove-Item -Recurse -Force $tmp
+    }
     $updated = $true
     Write-Host "Files updated." -ForegroundColor Green
 } catch {

@@ -105,6 +105,10 @@
   .chain .ind { flex: none; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre; }
   .chain .body { flex: 1; min-width: 0; } .chain .cabs { font-size: 0.78rem; color: var(--muted); }
   .chain .fl { font-size: 0.8rem; margin-top: 2px; } .chain .fl.error { color: var(--bad); font-weight: 600; } .chain .fl.warning { color: var(--warn); } .chain .fl.info { color: var(--muted); }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 55; display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px; overflow-y: auto; }
+  .modal .mbox { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 16px 16px; width: min(860px, 100%); }
+  .modal .dhead { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; }
+  .modal select { max-width: 100%; font-size: 0.82rem; padding: 4px 6px; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 0.88rem; z-index: 60; }
   @media print { nav, .searchbar, .hint, .results, .cardhead .tools, header .muted { display: none !important; } body { background: #fff; } .card { border: 0; } }
 </style>
@@ -113,7 +117,8 @@
 <main>
   <header>
     <h1>Port Troubleshooter</h1>
-    <span class="muted" id="hdrstatus">loading…</span>
+    <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="muted" id="hdrstatus">loading…</span>
+      <button class="btn" id="updbtn" title="Import the newest exports from the import folders">⟳ Update data <span class="count hidden" id="updcount"></span></button></span>
   </header>
   <nav>
     <button data-tab="port" class="on">Troubleshoot</button>
@@ -129,7 +134,7 @@
       <input type="search" id="q" placeholder="Device, alias, asset tag, hostname · Ethernet12 on dcbeswcpredg001 · DCB.ESW A01 12 · F03639" autofocus>
       <button class="btn primary" type="submit">Search</button>
     </form>
-    <p class="hint muted">Any name a device is known by (Patchmanager label, alias, asset tag, description, port plan, snagging list, CloudVision hostname – partial is fine), a switch port ("Ethernet49 on idf2eswcpredg03", "DCB.ESW A01 12") or a cable ID.</p>
+    <p class="hint muted">Any name a device is known by (Patchmanager label, alias, asset tag, description, IP list, snagging list, CloudVision hostname – partial is fine), a switch port ("Ethernet49 on idf2eswcpredg03", "DCB.ESW A01 12") or a cable ID.</p>
     <div class="results hidden" id="results"></div>
     <div id="card"></div>
   </section>
@@ -150,7 +155,7 @@
   </section>
 
   <section id="tab-mis" class="hidden">
-    <p class="muted">Every switch port where Patchmanager cabling, the port plan and the snagging list disagree. Reference is the Patchmanager cabling (or the plan when there is no cable).</p>
+    <p class="muted">Every switch port where Patchmanager cabling, the IP list and the snagging list disagree. Reference is the Patchmanager cabling (or the IP list when there is no cable).</p>
     <div class="filters">
       <input type="search" id="mq" placeholder="Filter (switch, device, …)" style="flex:1;min-width:220px">
       <a class="btn" href="/export/mismatches.csv">Download CSV</a>
@@ -164,7 +169,7 @@
   </section>
 
   <section id="tab-shut" class="hidden">
-    <p class="muted">Devices marked <b>future use</b> (on the device card, or ticked "Future Expansion" in Patchmanager) and every switch port that leads to them – via Patchmanager cabling or the port plan. These ports should be shut until the device goes live. The config below is text only; this tool never changes a switch.</p>
+    <p class="muted">Devices marked <b>future use</b> (on the device card, or ticked "Future Expansion" in Patchmanager) and every switch port that leads to them – via Patchmanager cabling or the IP list. These ports should be shut until the device goes live. The config below is text only; this tool never changes a switch.</p>
     <h2>Future devices <span class="muted" id="futcount"></span></h2>
     <div class="tablewrap"><table id="futtable"><thead><tr><th>Device</th><th>Marked by</th><th>Note</th><th>Since</th><th></th></tr></thead><tbody></tbody></table></div>
     <h2>Ports to shut</h2>
@@ -197,6 +202,15 @@
     </div>
   </section>
 </main>
+<div class="modal hidden" id="updmodal" role="dialog" aria-label="Update from latest files">
+  <div class="mbox">
+    <div class="dhead"><b>Update from latest files</b><button class="btn sm" id="updclose">✕</button></div>
+    <p class="muted" id="upddirs"></p>
+    <div class="tablewrap"><table id="updtable"><thead><tr><th></th><th>Input</th><th>Loaded now</th><th>Newest in the folders</th></tr></thead><tbody></tbody></table></div>
+    <p class="muted">Ticked = a newer file was found. Put new exports into one of the folders above (Patchmanager CSVs, IP list View, snagging list) – the type is detected from the content.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center"><span id="updmsg" class="muted"></span><button class="btn" id="updrescan">Scan again</button><button class="btn primary" id="updgo">Import ticked</button></div>
+  </div>
+</div>
 <aside class="drawer" id="drawer" aria-label="Details">
   <div class="dhead"><span class="muted" id="dtitle">Details</span><span><button class="btn sm" id="dfull" title="Open on the Troubleshoot tab">Open full page</button> <button class="btn sm" id="dclose" title="Close (Esc)">✕ Close</button></span></div>
   <div id="drawerbody"></div>
@@ -233,7 +247,10 @@ function setHash(h) {           // remember the view in the URL (back / reload /
 }
 $("#dclose").onclick = closeDrawer;
 $("#dfull").onclick = () => { const h = DETAIL; closeDrawer(); showTab("port"); location.hash = h; };
-document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#drawer").classList.contains("open")) closeDrawer(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (!$("#updmodal").classList.contains("hidden")) $("#updmodal").classList.add("hidden");
+  else if ($("#drawer").classList.contains("open")) closeDrawer(); });
 function showTab(t) {
   CURTAB = t;
   if (t === "port") $("#drawer").classList.remove("open");
@@ -315,8 +332,8 @@ function renderPort(c) {
     <div class="cols">
       <div><h2>Documented cable path <span class="muted">(Patchmanager)</span></h2>${c.paths.length ? c.paths.map(renderPath).join("") : '<p class="empty">No cable on this port in the Patchmanager export.</p>'}</div>
       <div>
-        <h2>Port plan <span class="muted">(IP list)</span></h2>
-        ${plan ? `<table><thead><tr><th>Device</th><th>VLAN / SFP</th><th>Cable</th><th></th></tr></thead><tbody>${plan}</tbody></table>` : '<p class="empty">Not in the port plan.</p>'}
+        <h2>IP list</h2>
+        ${plan ? `<table><thead><tr><th>Device</th><th>VLAN / SFP</th><th>Cable</th><th></th></tr></thead><tbody>${plan}</tbody></table>` : '<p class="empty">Not in the IP list.</p>'}
         <h2>CloudVision events</h2>
         ${!cvOn ? '<p class="empty">CloudVision not configured.</p>' : ev ? `<table><tbody>${ev}</tbody></table>` : '<p class="empty">No interface events in the last hours.</p>'}
       </div>
@@ -351,7 +368,7 @@ function renderPath(p) {
 function jobCard(c) {
   const L = [`PORT: ${c.switch} ${c.intf}   (CloudVision: ${c.cv_switch || "-"} ${c.intf})`];
   if (c.equipment) L.push(`Switch: ${c.equipment.template} @ ${c.equipment.location} ${c.equipment.position}`);
-  const live = c.plan.filter(p => !p.free); if (live.length) L.push(`Port plan: ${live.map(p => p.device + " VLAN " + p.vlan).join("; ")}`);
+  const live = c.plan.filter(p => !p.free); if (live.length) L.push(`IP list: ${live.map(p => p.device + " VLAN " + p.vlan).join("; ")}`);
   c.paths.forEach((p, n) => {
     L.push("", `Cable path${c.paths.length > 1 ? " " + (n + 1) : ""} (${p.status}):`);
     p.hops.forEach(h => {
@@ -395,14 +412,14 @@ async function openDevice(name) {
         `<button class="btn sm ${d.future ? "" : "warn"}" id="futbtn">${d.future ? "Clear future use" : "Mark as future use"}</button>`}
         <a class="btn sm primary" href="#chain=${encodeURIComponent(d.device)}">Signal chain</a>
         <button class="btn sm" id="link">Copy link</button><button class="btn sm" onclick="print()">Print</button></div></div>
-    ${d.compare && d.compare.length ? `<h2>Port plan vs. cabling <span class="muted">(${d.compare.filter(r => r.verdict !== "ok").length} differences)</span></h2>
-      <div class="tablewrap"><table><thead><tr><th>Device port</th><th>Port plan says</th><th>Patchmanager cabling</th><th></th></tr></thead><tbody>${d.compare.map(r => `<tr class="v-${r.verdict.replace(/ /g, "")}">
+    ${d.compare && d.compare.length ? `<h2>IP list vs. cabling <span class="muted">(${d.compare.filter(r => r.verdict !== "ok").length} differences)</span></h2>
+      <div class="tablewrap"><table><thead><tr><th>Device port</th><th>IP list says</th><th>Patchmanager cabling</th><th></th></tr></thead><tbody>${d.compare.map(r => `<tr class="v-${r.verdict.replace(/ /g, "")}">
         <td><b>${esc(r.port || r.cabled_port)}</b></td><td>${portLink(r.plan) || '<span class="muted">–</span>'}</td><td>${portLink(r.cabled) || '<span class="muted">no cable</span>'}</td>
-        <td>${{ ok: '<span class="tag ok">same</span>', switch: '<span class="tag bad">other switch port</span>', "no cable": '<span class="tag warn">no cable in Patchmanager</span>', "not in plan": '<span class="tag">not in port plan</span>' }[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
+        <td>${{ ok: '<span class="tag ok">same</span>', switch: '<span class="tag bad">other switch port</span>', "no cable": '<span class="tag warn">no cable in Patchmanager</span>', "not in plan": '<span class="tag">not in IP list</span>' }[r.verdict] || ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
     <h2>Connections <span class="muted">(${d.connections.length}, Patchmanager)</span></h2>
     ${conns ? `<div class="tablewrap"><table><thead><tr><th>Port</th><th>Far end</th><th>Path</th><th>Switch port</th></tr></thead><tbody>${conns}</tbody></table></div>` : '<p class="empty">No cables on this device in the Patchmanager export.</p>'}
-    <h2>Port plan <span class="muted">(${d.plan.length})</span></h2>
-    ${plan ? `<div class="tablewrap"><table><thead><tr><th>Switch port</th><th>Device</th><th>VLAN</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : '<p class="empty">Not in the port plan.</p>'}
+    <h2>IP list <span class="muted">(${d.plan.length})</span></h2>
+    ${plan ? `<div class="tablewrap"><table><thead><tr><th>Switch port</th><th>Device</th><th>VLAN</th><th></th></tr></thead><tbody>${plan}</tbody></table></div>` : '<p class="empty">Not in the IP list.</p>'}
     <h2>Snagging list <span class="muted">(${d.snags.length})</span></h2>
     ${snags ? `<div class="tablewrap"><table><thead><tr><th>Nr</th><th>Port</th><th>Problem</th><th>Status</th><th>First seen</th></tr></thead><tbody>${snags}</tbody></table></div>` : '<p class="empty">No entries.</p>'}
   </div>`;
@@ -416,6 +433,45 @@ async function openDevice(name) {
     catch (e) { toast(e.message); }
   };
 }
+
+// ------------------------------------------------------------- update from latest files
+let SRC = null;
+async function scanSources() {
+  try { SRC = await api("/api/sources"); } catch (e) { $("#updmsg").textContent = e.message; return; }
+  const n = Object.values(SRC.kinds).filter(k => k.newer).length;
+  $("#updcount").textContent = n; $("#updcount").classList.toggle("hidden", !n);
+  $("#updbtn").classList.toggle("primary", n > 0);
+  return SRC;
+}
+async function openUpdate() {
+  $("#updmodal").classList.remove("hidden"); $("#updmsg").textContent = "scanning folders…";
+  if (!await scanSources()) return;
+  $("#upddirs").innerHTML = "Folders: " + SRC.dirs.map(d => `<span class="mono">${esc(d)}</span>`).join(" · ");
+  $("#updtable tbody").innerHTML = Object.entries(KINDS).map(([k, label]) => {
+    const e = SRC.kinds[k] || { candidates: [] }, cur = e.current;
+    const opts = e.candidates.map(c => `<option value="${c.id}">${esc(c.name)} – ${esc(c.mtime.replace("T", " "))}${c.loaded ? " (loaded)" : ""}</option>`).join("");
+    return `<tr><td><input type="checkbox" data-k="${k}" ${e.newer ? "checked" : ""} ${e.candidates.length ? "" : "disabled"}></td>
+      <td><b>${esc(label)}</b>${e.newer ? ' <span class="tag warn">newer file</span>' : e.candidates.length ? ' <span class="tag ok">up to date</span>' : ""}</td>
+      <td class="muted">${cur ? esc(cur.file) + "<br>" + esc(cur.loaded.replace("T", " ")) : "not imported"}</td>
+      <td>${opts ? `<select data-k="${k}">${opts}</select>` : '<span class="muted">no file found</span>'}</td></tr>`;
+  }).join("");
+  $("#updmsg").textContent = "";
+}
+$("#updbtn").onclick = openUpdate;
+$("#updclose").onclick = () => $("#updmodal").classList.add("hidden");
+$("#updmodal").onclick = e => { if (e.target.id === "updmodal") $("#updmodal").classList.add("hidden"); };
+$("#updrescan").onclick = openUpdate;
+$("#updgo").onclick = async () => {
+  const ids = [...document.querySelectorAll("#updtable input:checked")].map(cb => document.querySelector(`#updtable select[data-k="${cb.dataset.k}"]`)?.value).filter(Boolean);
+  if (!ids.length) { $("#updmsg").textContent = "nothing ticked"; return; }
+  $("#updmsg").textContent = "importing…";
+  try {
+    const r = await api("/api/import-latest", { method: "POST", body: JSON.stringify({ ids }) });
+    toast("Imported: " + r.imported.map(x => KINDS[x.kind] + " (" + x.count + ")").join(", "));
+    MIS = null; await loadStatus(); loadWork(); loadShutCount(); openUpdate();
+    if (CURTAB === "mis") loadMis();
+  } catch (e) { $("#updmsg").textContent = e.message; }
+};
 
 // ------------------------------------------------------------- signal chain
 const SEVTAG = { error: '<span class="sev error">error</span>', warning: '<span class="sev warning">warning</span>', info: '<span class="sev info">info</span>' };
@@ -571,7 +627,7 @@ $("#ssave").onclick = async () => {
 };
 
 // ------------------------------------------------------------- data + import
-const KINDS = { cables: "Patchmanager cables", equipment: "Patchmanager equipment", portplan: "Port plan (IP list View)", snags: "Connectivity snagging list" };
+const KINDS = { cables: "Patchmanager cables", equipment: "Patchmanager equipment", portplan: "IP list (View xlsx)", snags: "Connectivity snagging list" };
 async function renderData() {
   if (!STATUS) return;
   const m = STATUS.store.meta;
@@ -611,7 +667,7 @@ $("#locform").onsubmit = async e => {
   } catch (err) { $("#locres").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
 };
 
-loadStatus().then(() => { route(); loadWork(); loadShutCount(); });
+loadStatus().then(() => { route(); loadWork(); loadShutCount(); scanSources(); });
 setInterval(loadStatus, 30000);
 </script>
 </body>

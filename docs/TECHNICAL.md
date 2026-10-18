@@ -1,8 +1,11 @@
-PORT TROUBLESHOOTER
-===================
+# Port Troubleshooter – technical notes
+
+Short overview for users: [../README.md](../README.md). This file: inputs, matching rules, CloudVision, deployment.
+
+```text
 
 One page per switch port: the documented cable path from Patchmanager (through every
-patch panel, outlet and trunk), what the port plan expects there, the snagging-list
+patch panel, outlet and trunk), what the IP list expects there, the snagging-list
 history and the live CloudVision interface events - side by side, plus a worklist of
 everything that is still open.
 
@@ -12,13 +15,13 @@ everything that is still open.
                     any name a device is known by - also partial, case / dots / leading
                     zeros ignored ('dcb vs 2' finds DCB.VS 02):
                       Patchmanager label, alias (CS01 AMU 01), asset tag (QID...), description
-                      (Dataminer), port plan name (MC1STBDGTPLY001), snagging-list
+                      (Dataminer), IP list name (MC1STBDGTPLY001), snagging-list
                       destination, CloudVision hostname
-  Port card:        Sources compared (Patchmanager cabling / port plan / snagging list:
+  Port card:        Sources compared (Patchmanager cabling / IP list / snagging list:
                     same / other device / other port), Copy job card, Copy link, Print,
                     ◀ port / port ▶ to step through neighbouring ports.
   Device card:      every cabled port traced to its far end with a link to the switch port,
-                    port plan vs. cabling per device port, all names the device is known by.
+                    IP list vs. cabling per device port, all names the device is known by.
   Mismatches tab:   every switch port where the sources disagree (errors / warnings /
                     check on site / info), click opens the port.
   CSV dump:         "Download CSV" on Worklist and Mismatches (Excel-ready, UTF-8):
@@ -36,7 +39,7 @@ everything that is still open.
 
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
-                    Its switch ports (via cabling AND port plan) are listed under "To shut",
+                    Its switch ports (via cabling AND IP list) are listed under "To shut",
                     flagged on the port card and in the worklist, with CSV and Arista EOS
                     config (text only - the tool never touches a switch). A port where the
                     documentation names another device is marked "conflict - check first"
@@ -53,6 +56,11 @@ INPUTS (tab "Data & CloudVision", drag & drop - the type is detected from the co
   IP list "View" (xlsx)                 sheets with Switch | Port | Device | VLAN | Cable No blocks
   Connectivity snagging list (xlsx)     sheet "Master" (status manually, ...) and the
                                         PM / "arista cloud" name sheet (switch name mapping)
+
+"⟳ Update data" (top right) scans the import folders - config.json "import_dirs",
+default ["inbox"] (the inbox\ folder next to server.py, created at start; add e.g. a
+share or "~/Downloads"). It shows the newest file of each type next to what is loaded and
+ticks the ones that are newer. Only files inside these folders can be imported this way.
 
 A new import replaces the previous file of the same type. The last file of each type is
 kept in data\ and loaded again when the service starts. data\ is git-ignored - the files
@@ -74,7 +82,7 @@ HOW THE PATH IS FOLLOWED
 - Interface names: Ethernet49 = port 49;  Ethernet5/2 = port 5 lane 2 (breakout);
   on chassis switches (ports under LCxx in Patchmanager) Ethernet3/1/1 = LC03 port 1 lane 1.
 
-Checks shown on a port card: no cable documented, path open / ambiguous, port plan vs.
+Checks shown on a port card: no cable documented, path open / ambiguous, IP list vs.
 Patchmanager far end (mismatch = red), port marked DEFECT / reserved in Patchmanager,
 cable "to be checked", no CloudVision hostname known, open snag.
 
@@ -116,3 +124,4 @@ RUN
 
 Python 3.8+, standard library only. Settings at the top of server.py.
 Tests: python -m unittest discover -s tests
+```
