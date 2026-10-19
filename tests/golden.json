@@ -1,0 +1,48 @@
+{
+ "inputs": "df9df0d44c3b",
+ "counts": {
+  "cables": 15287,
+  "ip_list_rows": 4310,
+  "snags": 285,
+  "neuron_rows": 784
+ },
+ "mismatch_bucket": {
+  "incomplete": 1357,
+  "naming": 1140,
+  "real": 964
+ },
+ "mismatch_kind": {
+  "incomplete | CloudVision hostname not mapped": 18,
+  "incomplete | IP list without device name": 111,
+  "incomplete | Neuron list vs Patchmanager": 38,
+  "incomplete | cabling ends at panel": 174,
+  "incomplete | in IP list, no cable in Patchmanager": 1016,
+  "naming | naming only (same device)": 1140,
+  "real | Neuron list vs Patchmanager": 365,
+  "real | Neuron list vs Patchmanager - numbering shift": 3,
+  "real | different device": 315,
+  "real | different device (trunk assumed)": 94,
+  "real | different port": 159,
+  "real | documented, link down": 28
+ },
+ "port_status": {
+  "ambiguous": 30,
+  "check": 62,
+  "ends at panel": 457,
+  "mismatch": 303,
+  "naming only": 1116,
+  "no cable": 1015,
+  "ok": 1069,
+  "port differs": 158,
+  "two cables": 32
+ },
+ "device_kind": {
+  "device": 2820,
+  "patch panel": 897,
+  "switch": 99
+ },
+ "neuron_check": {
+  "issue": 262,
+  "ok": 522
+ }
+}
