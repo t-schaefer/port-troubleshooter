@@ -145,6 +145,36 @@ class ModelTest(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in card["compare"]], ["ref", "naming"])
         self.assertIn("ok", [c[0] for c in card["checks"]])
 
+    def test_fusion_lldp(self):
+        state = {"devices": [
+            {"name": "CAM 01", "ip": "10.0.0.1", "config": {"lldpFetchedAt": "2026-10-19T10:00:00", "lldp": {"neighbor": [
+                {"interface": 1, "chassis": "AA:AA", "port": "Ethernet12", "system_name": "swhost01.example.local"},
+                {"interface": 2, "chassis": "", "port": ""}]}}},
+            {"name": "CAM 02", "ip": "10.0.0.2", "config": {"lldp": {"neighbor": [
+                {"interface": 1, "chassis": "aa:aa", "port": "Ethernet13"}]}}},      # name missing -> MAC
+        ]}
+        rows = model.parse_fusion_state(state)
+        self.assertEqual([(r["device"], r["iface"], r["switch_name"], r["port"]) for r in rows],
+                         [("CAM 01", "e1", "swhost01", "Ethernet12"), ("CAM 02", "e1", "", "Ethernet13")])
+        self.s.set_lldp(rows)
+        self.assertEqual([r["switch"] for r in self.s.lldp], ["SW 01", "SW 01"])     # second via the learnt MAC
+        self.assertTrue(self.s.lldp[1].get("via_mac"))
+        # LLDP agrees with Patchmanager on SW 01 / 12 ...
+        card = self.s.port_card("SW 01", (12,))
+        lrow = next(r for r in card["compare"] if r["source"] == "LLDP (Fusion)")
+        self.assertEqual(lrow["verdict"], "ok")
+        # ... and sees CAM 02 on port 13, where nothing is documented -> listed
+        self.assertEqual(self.s.port_card("SW 01", (13,))["lldp"][0]["device"], "CAM 02")
+
+    def test_red_blue(self):
+        self.assertEqual(model.switch_color("DCB.VR 01"), "blue")
+        self.assertEqual(model.switch_color("IDF1.VSWR 01"), "red")
+        self.assertEqual(model.switch_color("DCB.ESW A01"), "")
+        rows = [{"device": "FUS 01", "iface": "e1", "switch_name": "IDF2.VSWB 01", "chassis": "", "port": "Ethernet1", "fetched": ""},
+                {"device": "FUS 01", "iface": "e2", "switch_name": "IDF1.VSWR 01", "chassis": "", "port": "Ethernet1", "fetched": ""}]
+        self.s.set_lldp(rows)
+        self.assertEqual([p["kind"] for p in self.s.lldp_problems()], ["Red / Blue swapped"])
+
     def test_same_port(self):
         self.assertTrue(model.same_port("PCLAN1", "PC LAN 1"))
         self.assertTrue(model.same_port("ETH.1", "Eth"))

@@ -346,6 +346,52 @@ def parse_neuron(sheets):
     return out
 
 
+# ---------------------------------------------------------------- Fusion LLDP (from the Fusion Dashboard)
+
+LLDP_IFACE = {1: "e1", 2: "e2", 3: "oob"}          # Fusion LLDP interface number -> port (e1 Red, e2 Blue)
+LLDP_NAME_KEYS = ("system_name", "sys_name", "sysname", "systemName", "system", "remote_system_name",
+                  "chassis_name", "neighbor_name", "name", "hostname")
+
+
+def parse_fusion_state(payload):
+    """Fusion Dashboard /api/state -> [{device, ip, iface, switch_name, chassis, port, ttl, fetched}].
+    The dashboard keeps the device's whole LLDP answer; the switch name field is read under any
+    of LLDP_NAME_KEYS (the exact name depends on the Fusion firmware), the chassis MAC always."""
+    out = []
+    for d in (payload or {}).get("devices", []):
+        cfg = d.get("config") or {}
+        lldp = cfg.get("lldp") or {}
+        name = d.get("name") or (cfg.get("ipconfig") or {}).get("hostname") or d.get("tag") or d.get("ip")
+        for n in lldp.get("neighbor") or []:
+            if not n.get("chassis") and not any(n.get(k) for k in LLDP_NAME_KEYS):
+                continue          # interface heard nothing
+            try:
+                num = int(n.get("interface"))
+            except (TypeError, ValueError):
+                num = None
+            sw = next((str(n[k]).strip() for k in LLDP_NAME_KEYS if n.get(k)), "")
+            sw = sw.split(".")[0] if re.fullmatch(r"[\w\-]+(\.[\w\-]+){2,}", sw) else sw   # strip a DNS domain
+            out.append({"device": name, "ip": d.get("ip", ""), "iface": LLDP_IFACE.get(num, "If %s" % n.get("interface")),
+                        "switch_name": sw, "chassis": str(n.get("chassis") or "").lower(), "port": str(n.get("port") or ""),
+                        "ttl": n.get("ttl"), "fetched": cfg.get("lldpFetchedAt") or d.get("lastConfigAt") or ""})
+    return out
+
+
+def switch_color(name):
+    """Red / Blue network of a 2110 switch from its name: type ending in R / B (VSWR, ESWB,
+    BSWR ...); the spines (DCB/DCR.VR, ...livspi...) by room: DCR = Red, DCB = Blue.
+    '' for everything else (converged / access switches have no colour)."""
+    n = str(name or "").upper().strip()
+    m = re.search(r"\.[A-Z]*SW([RB])\b", n)
+    if m:
+        return "red" if m.group(1) == "R" else "blue"
+    spine = re.match(r"^(DC[RB])[.\s]+VR\b", n) or re.match(r"^(DC[RB])ESWLIV(SPI|BDR)", n)
+    if spine:
+        return "red" if spine.group(1) == "DCR" else "blue"
+    m = re.match(r"^(DC[RB])ESWLIVBDR", n)
+    return ("red" if m.group(1) == "DCR" else "blue") if m else ""
+
+
 CABLE_ID_RE = re.compile(r"^[A-Z]{1,4}\.?[A-Z]?\d{3,6}$")
 
 
@@ -767,6 +813,8 @@ class Store:
         self.future = {}        # device -> {"note", "since"}: marked "future use" in the page
         self.neuron = []        # Neuron signal list rows (one per BNC)
         self.cvports = {}       # CloudVision hostname (upper) -> {nums: interface row}
+        self.lldp = []          # Fusion LLDP rows (parse_fusion_state), see set_lldp
+        self.lldp_by_port, self.lldp_by_dev, self.lldp_macs = {}, {}, {}
         self.meta = {}          # kind -> {"file", "loaded", "count"}
         self._rebuild_names()
 
@@ -1036,6 +1084,9 @@ class Store:
         card["compare"] = self._compare_device(card)
         card["future"] = self.future_of(dev)
         card["neuron"] = self.neuron_rows(dev) if self.neuron else []
+        card["lldp"] = [dict(r) for r in self.lldp_by_dev.get(norm_digits(dev), [])] if self.lldp else []
+        card["lldp_problems"] = [{k: v for k, v in p.items() if k != "rows"} for p in self.lldp_problems()
+                                 if same_device(p["device"], dev)] if self.lldp else []
         card["neuron_summary"] = [x for x in self.neuron_summary() if same_device(x["device"], dev)] if self.neuron else []
         return card
 
@@ -1108,6 +1159,65 @@ class Store:
         return {"index": i + 1, "total": len(ports), "prev": list(ports[i - 1]) if i > 0 else None,
                 "next": list(ports[i + 1]) if i + 1 < len(ports) else None,
                 "ports": [intf_name(p) for p in ports]}
+
+    # -- Fusion LLDP ---------------------------------------------------------------------------
+    def set_lldp(self, rows):
+        """Take the Fusion LLDP rows. The switch is found by its LLDP name (CloudVision hostname
+        or Patchmanager name); rows with only a chassis MAC use the MAC -> switch pairs learnt
+        from rows that carry both."""
+        macs = {}
+        for r in rows:
+            sw = self.pm_name(r["switch_name"]) if r["switch_name"] else None
+            r["switch"] = sw or ""
+            if sw and r["chassis"]:
+                macs.setdefault(r["chassis"], sw)
+        for r in rows:
+            if not r["switch"] and r["chassis"] in macs:
+                r["switch"], r["via_mac"] = macs[r["chassis"]], True
+            r["nums"] = list(parse_intf(r["port"]) or [])
+            r["color"] = switch_color(r["switch"] or r["switch_name"])
+            r["expected"] = {"e1": "red", "e2": "blue"}.get(r["iface"], "")
+        self.lldp, self.lldp_macs = rows, macs
+        self.lldp_by_port, self.lldp_by_dev = defaultdict(list), defaultdict(list)
+        for r in rows:
+            if r["switch"] and r["nums"]:
+                self.lldp_by_port[(norm_name(r["switch"]), tuple(r["nums"]))].append(r)
+            self.lldp_by_dev[norm_digits(r["device"])].append(r)
+        self._shut_cache = None
+
+    def lldp_for_port(self, pm, nums, modular=None):
+        nums = tuple(nums)
+        hit = self.lldp_by_port.get((norm_name(pm), nums))
+        if hit:
+            return hit
+        if modular is None:
+            modular = bool(self.cabling) and self.cabling.is_modular(pm)
+        base = nums[:2] if modular else nums[:1]
+        return [r for (sw, n), rs in self.lldp_by_port.items() if sw == norm_name(pm) and n[:len(base)] == base for r in rs]
+
+    def lldp_problems(self):
+        """Red / Blue per Fusion: e1 must be on a Red switch, e2 on a Blue one, and not both on
+        the same switch. [{device, kind, text, rows}]"""
+        out = []
+        for dev, rows in self.lldp_by_dev.items():
+            byif = {r["iface"]: r for r in rows}
+            e1, e2 = byif.get("e1"), byif.get("e2")
+            name = rows[0]["device"]
+            if e1 and e2 and e1["switch"] and e1["switch"] == e2["switch"]:
+                out.append({"device": name, "kind": "Red and Blue on the same switch",
+                            "text": "e1 (Red) and e2 (Blue) both go to %s" % e1["switch"], "rows": [e1, e2]})
+                continue
+            if e1 and e2 and e1["color"] == "blue" and e2["color"] == "red":
+                out.append({"device": name, "kind": "Red / Blue swapped",
+                            "text": "e1 (Red) is on %s (Blue), e2 (Blue) on %s (Red)" % (e1["switch"] or e1["switch_name"], e2["switch"] or e2["switch_name"]),
+                            "rows": [e1, e2]})
+                continue
+            for r in (e1, e2):
+                if r and r["color"] and r["expected"] and r["color"] != r["expected"]:
+                    out.append({"device": name, "kind": "Red / Blue on the wrong network",
+                                "text": "%s (%s) is on %s, a %s switch" % (r["iface"], r["expected"].title(), r["switch"] or r["switch_name"], r["color"].title()),
+                                "rows": [r]})
+        return out
 
     # -- CloudVision interface exports ------------------------------------------------------
     def cv_ports_for(self, pm, nums, modular=None):
@@ -1307,6 +1417,8 @@ class Store:
         if self.equipment:
             card["equipment"] = self.equipment.get(pm)
         card["cv_ports"] = self.cv_ports_for(pm, nums, modular)
+        card["lldp"] = [{k: r.get(k) for k in ("device", "iface", "switch", "switch_name", "port", "chassis", "fetched", "color", "expected", "via_mac")}
+                        for r in self.lldp_for_port(pm, nums, modular)] if self.lldp else []
         if nav:           # only for the card the user opens - not for the bulk lists
             card["nav"] = self.neighbours(pm, nums)
         card["compare"] = self._compare_port(card)
@@ -1332,6 +1444,10 @@ class Store:
             if not p["free"]:
                 rows.append({"source": "IP list", "device": p.get("_dev") or p["equipment"], "port": p.get("_devport") or p["eqport"],
                              "detail": "%s r%s, VLAN %s" % (p["sheet"], p["row"], p["vlan"])})
+        for l in card.get("lldp", [])[:2]:
+            dev, _ = self.device_split(l["device"])
+            rows.append({"source": "LLDP (Fusion)", "device": dev, "port": l["iface"],
+                         "detail": "seen %s%s" % ((l.get("fetched") or "")[:16].replace("T", " "), " (switch via MAC)" if l.get("via_mac") else "")})
         for lane in card.get("cv_ports", [])[:1]:
             desc = lane["description"].strip(" *")
             if desc:
@@ -1354,6 +1470,8 @@ class Store:
         for r in rows:
             rel = self.device_relation(r["device"], ref["device"]) if ref and r is not ref else "same"
             prel = port_relation(r["port"], ref["port"]) if ref and r is not ref else "same"
+            if r["source"].startswith("LLDP"):
+                prel = "same"   # e1 / e2 vs the Patchmanager port label is not comparable - Red/Blue covers it
             r["naming"] = ""
             if r is ref or not ref:
                 r["verdict"] = "ref" if r is ref else ""
@@ -1896,6 +2014,10 @@ class Store:
             for k, l in cvp.items():
                 if l["status"] == "Connected" or l["description"]:
                     ports.add((pm, k[:2] if modular else k[:1]))
+        for (sw, n), rs in self.lldp_by_port.items():
+            pm = rs[0]["switch"]
+            modular = bool(self.cabling) and self.cabling.is_modular(pm)
+            ports.add((pm, tuple(n[:2] if modular else n[:1])))
         out, seen = [], set()
         for sw, nums in sorted(ports, key=lambda x: (norm_name(x[0]), x[1])):
             card = self.port_card(sw, nums)
@@ -1907,6 +2029,18 @@ class Store:
             pm_paths = [r for r in card["compare"] if r["source"] == "Patchmanager cabling"]
             for r in card["compare"]:
                 if r["verdict"] in ("ok", "ref", ""):
+                    continue
+                if r["source"] == "LLDP (Fusion)":
+                    if r["verdict"] in ("device", "port", "trunk"):
+                        out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"], "nums": card["nums"],
+                                    "severity": "error", "kind": "LLDP sees another device", "source": r["source"],
+                                    "says": ("%s %s" % (r["device"], r["port"])).strip(), "reference": ref["source"] if ref else "",
+                                    "ref_says": ("%s %s" % (ref["device"], ref["port"] or "")).strip() if ref else "", "detail": r.get("detail", "")})
+                    elif r["verdict"] == "unknown":
+                        out.append({"switch": card["switch"], "cv_switch": card["cv_switch"], "intf": card["intf"], "nums": card["nums"],
+                                    "severity": "warning", "kind": "LLDP shows the far end, cabling incomplete", "source": r["source"],
+                                    "says": ("%s %s" % (r["device"], r["port"])).strip(), "reference": ref["source"] if ref else "",
+                                    "ref_says": ("%s %s" % (ref["device"], ref["port"] or "")).strip() if ref else "", "detail": r.get("detail", "")})
                     continue
                 sev = {"device": "error", "port": "warning", "trunk": "check", "unknown": "info", "incomplete": "info",
                        "unmapped": "info", "naming": "naming", "double": "error"}[r["verdict"]]
@@ -1932,6 +2066,12 @@ class Store:
                             "severity": "warning", "kind": "in IP list, no cable in Patchmanager", "source": "IP list",
                             "says": live["device"], "reference": "Patchmanager cabling", "ref_says": "(nothing)",
                             "detail": "%s r%s" % (live["sheet"], live["row"])})
+        for pr in self.lldp_problems():
+            r0 = pr["rows"][0]
+            out.append({"switch": pr["device"], "cv_switch": "", "intf": "e1 / e2", "nums": [], "device": pr["device"],
+                        "severity": "error", "kind": pr["kind"], "source": "LLDP (Fusion)", "says": pr["text"],
+                        "reference": "", "ref_says": "", "detail": ""})
+        # LLDP on ports nobody documented: add them to the comparison set (done above via ports set)
         for sm in self.neuron_summary():
             out.append({"switch": sm["device"], "cv_switch": "", "intf": "(whole %s)" % ("card" if sm["kind"] == "ipg" else "panel"),
                         "nums": [], "device": sm["device"], "severity": "check", "kind": "Neuron list vs Patchmanager - numbering shift",
@@ -1950,6 +2090,8 @@ class Store:
         "documented, link down": ("real", 4), "future use, link up": ("real", 5),
         "different device (trunk assumed)": ("real", 6), "Neuron list vs Patchmanager": ("real", 7),
         "Neuron list vs Patchmanager - numbering shift": ("real", 8),
+        "LLDP sees another device": ("real", 0), "Red / Blue swapped": ("real", 0), "Red and Blue on the same switch": ("real", 0),
+        "Red / Blue on the wrong network": ("real", 0), "LLDP shows the far end, cabling incomplete": ("incomplete", 0),
         "link up, not documented": ("incomplete", 1), "in IP list, no cable in Patchmanager": ("incomplete", 2),
         "cabling ends at panel": ("incomplete", 3), "IP list without device name": ("incomplete", 4),
         "CloudVision hostname not mapped": ("incomplete", 5), "naming only (same device)": ("naming", 1),
@@ -2023,6 +2165,15 @@ class Store:
             elif kind == "naming only (same device)":
                 m["meaning"] = "Technically the same: %s writes %s, Patchmanager %s." % (src, says, pm)
                 m["action"] = "Optional: align the spelling in %s so searches find both." % src
+            elif kind == "LLDP sees another device":
+                m["meaning"] = "Reality (LLDP from the Fusion) says %s is plugged into %s, but the documentation says %s." % (says, port, m.get("ref_says") or pm)
+                m["action"] = "Trust LLDP: correct the documentation - or re-patch if the documented device is the intended one."
+            elif kind == "LLDP shows the far end, cabling incomplete":
+                m["meaning"] = "LLDP shows %s on %s, but the Patchmanager path stops at a panel (%s)." % (says, port, m.get("ref_says") or pm)
+                m["action"] = "Complete the patching in Patchmanager up to %s - LLDP confirms where it goes." % says.split(" ")[0]
+            elif kind in ("Red / Blue swapped", "Red and Blue on the same switch", "Red / Blue on the wrong network"):
+                m["meaning"] = "%s: %s (LLDP from the Fusion). ST 2022-7 needs e1 on the Red and e2 on the Blue network." % (m["switch"], says)
+                m["action"] = "Re-patch the Fusion's e1 / e2 on site (or swap the fibres) and check the documentation."
             elif kind == "Neuron list vs Patchmanager - numbering shift":
                 m["meaning"] = says
                 m["action"] = "Check on site which numbering is right (Neuron list or Patchmanager) and correct the other one."

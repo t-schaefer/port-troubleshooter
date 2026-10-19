@@ -59,6 +59,17 @@ everything that is still open.
                     direction, panel port R/F + number); card- or panel-wide numbering offsets
                     are reported once instead of per BNC.
 
+  Fusion LLDP:      every 5 min the service reads the Fusion Dashboard's /api/state
+                    (config fusion_url, default http://localhost:8090; read-only, from the
+                    dashboard's cache - the Fusions are not asked again). Switch = LLDP system
+                    name (any of LLDP_NAME_KEYS) or, without a name, the chassis MAC learnt from
+                    rows that have both. LLDP is a source on the port card (compared by device
+                    only), "LLDP sees another device" is a real mismatch, "LLDP shows the far
+                    end, cabling incomplete" where the Patchmanager path stops at a panel.
+  Red / Blue:       e1 must be on a Red, e2 on a Blue 2110 switch: ...SWR / ...SWB by type,
+                    the spines by room (DCR = Red, DCB = Blue). Swapped / same switch / wrong
+                    network are real mismatches.
+
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
                     Its switch ports (via cabling AND IP list) are listed under "To shut",

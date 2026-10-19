@@ -71,6 +71,9 @@ STORE = model.Store()
 CV = {"enabled": False, "url": "", "error": "", "devices": [], "events": [], "devices_at": "",
       "events_at": "", "raw_sample": ""}
 CV_WAKE = threading.Event()
+FUSION = {"url": "", "at": "", "error": "", "devices": 0, "rows": [], "with_name": 0}
+FUSION_WAKE = threading.Event()
+FUSION_EVERY_SEC = 300
 KIND_NAMES = {"cables": "Patchmanager cables", "equipment": "Patchmanager equipment", "portplan": "IP list",
               "snags": "snagging list", "neuron": "Neuron signal list", "cvports": "CloudVision ports"}
 FIXED_KINDS = ("cables", "equipment", "portplan", "snags", "neuron")
@@ -126,7 +129,7 @@ STATE = {"loading": True, "lists_ready": False}
 
 def mismatches():
     """Whole-site comparison - computed once per data state."""
-    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True))
+    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True), FUSION["at"])
     if MISMATCH_CACHE["key"] != key:
         with COMPUTE_LOCK:
             if MISMATCH_CACHE["key"] != key:
@@ -138,7 +141,7 @@ def mismatches():
 def ports_overview():
     """All ports (a few seconds) - computed once per data state."""
     key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True),
-           json.dumps(STORE.future, sort_keys=True), CV["events_at"])
+           json.dumps(STORE.future, sort_keys=True), CV["events_at"], FUSION["at"])
     if PORTS_CACHE["key"] != key:
         with COMPUTE_LOCK:
             if PORTS_CACHE["key"] != key:
@@ -495,6 +498,36 @@ def import_file(filename, data, source=None):
     return key, n
 
 
+# ---------------------------------------------------------------- Fusion Dashboard (LLDP)
+
+def fusion_loop():
+    """Every 5 minutes: read the Fusion Dashboard's /api/state (its own cache - the Fusions are
+    not asked again) and take the LLDP neighbours. Read-only; nothing is sent to the dashboard."""
+    import urllib.request
+    while True:
+        url = (load_config().get("fusion_url") or "").rstrip("/")
+        FUSION["url"] = url
+        if url:
+            try:
+                req = urllib.request.Request(url + "/api/state", headers={"Accept-Encoding": "gzip"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    raw = r.read()
+                    if r.headers.get("Content-Encoding") == "gzip":
+                        raw = gzip.decompress(raw)
+                payload = json.loads(raw.decode("utf-8"))
+                rows = model.parse_fusion_state(payload)
+                with LOCK:
+                    STORE.set_lldp(rows)
+                FUSION.update(at=datetime.now().isoformat(timespec="seconds"), error="", rows=rows,
+                              devices=len(payload.get("devices") or []), with_name=sum(1 for x in rows if x["switch_name"]))
+                log.info("Fusion LLDP: %d devices, %d neighbours (%d with switch name)", FUSION["devices"], len(rows), FUSION["with_name"])
+                warm_up()
+            except Exception as e:
+                FUSION["error"] = "%s: %s" % (type(e).__name__, str(e)[:200])
+        FUSION_WAKE.wait(FUSION_EVERY_SEC)
+        FUSION_WAKE.clear()
+
+
 # ---------------------------------------------------------------- CloudVision poll
 
 def cv_loop():
@@ -607,6 +640,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"store": STORE.status(), "cv": cv_public(), "jira_url": cfg.get("jira_url", ""),
                                 "loading": STATE["loading"], "lists_ready": STATE["lists_ready"],
                                 "version": VERSION, "python": sys.version.split()[0], "platform": sys.platform,
+                                "fusion": dict({k: FUSION[k] for k in ("url", "at", "error", "devices", "with_name")},
+                                               neighbours=len(FUSION["rows"])),
                                 "cv_url": cfg.get("cv_url", ""), "serials": load_serials()})
             elif u.path == "/api/search":
                 with LOCK:
@@ -909,6 +944,9 @@ class Handler(BaseHTTPRequestHandler):
                 SERIALS_FILE.write_text(json.dumps(clean, indent=2, sort_keys=True), encoding="utf-8")
                 log.info("serials.json saved (%d)", len(clean))
                 self._json({"ok": True})
+            elif u.path == "/api/fusion/refresh":
+                FUSION_WAKE.set()
+                self._json({"ok": True})
             elif u.path == "/api/cv/refresh":
                 CV_WAKE.set()
                 self._json({"ok": True})
@@ -940,6 +978,7 @@ def main():
         STATE["loading"] = False
         log.info("data loaded (%.1fs)", time.time() - t)
         threading.Thread(target=cv_loop, daemon=True).start()
+        threading.Thread(target=fusion_loop, daemon=True).start()
         warm_up()
     threading.Thread(target=start, daemon=True).start()
     log.info("Port Troubleshooter on http://0.0.0.0:%d/  (Ctrl+C stops it)", args.port)
