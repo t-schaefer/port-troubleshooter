@@ -70,6 +70,17 @@ everything that is still open.
                     the spines by room (DCR = Red, DCB = Blue). Swapped / same switch / wrong
                     network are real mismatches.
 
+  state.db:         SQLite (stdlib) with notes, ignores, future, serials, switch-name
+                    overrides and the history (imports, evaluation states with mismatch
+                    counts, mismatch keys of the last 30 states for "new / resolved"). Old
+                    JSON files are taken over at the first start (*.json.migrated kept).
+  Data states:      an import builds a complete new data state next to the running one
+                    (files + settings + last LLDP + Ports / Mismatches lists) and then switches
+                    over in one step - other requests keep being answered meanwhile; while a
+                    list is rebuilt, visitors get the previous one.
+  Golden test:      tests/test_golden.py checks the numbers of the local data/ against
+                    tests/golden.json (counts only); --update after intended changes.
+
   Future use:       "Mark as future use" on a device card (stored in future.json, git-
                     ignored) - or "Future Expansion" ticked on the device in Patchmanager.
                     Its switch ports (via cabling AND IP list) are listed under "To shut",

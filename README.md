@@ -16,6 +16,7 @@ It combines four exports that you load into the tool, plus live data if configur
 | **Connectivity snagging list** (xlsx) | known problems, status, who fixed what |
 | **Neuron signal list** (xlsx) | every Neuron BNC: panel port, cables, endpoint, Cerebrum names |
 | **CloudVision port exports** (CSV, per switch) | link status, speed, optic, switch description |
+| **Fusion Dashboard** (LLDP, automatic) | where every Fusion's e1 / e2 is really plugged in |
 | **CloudVision** (optional, live) | current interface errors and link events |
 
 Loading files: click **⟳ Update data** at the top right and upload the exports from your
@@ -45,6 +46,9 @@ The tool opens on **Ports**; **? Help** (top right) shows this page.
 - **Notes & Jira.** Every port and device card has notes: who (type a name or pick one
   used before), a comment and a Jira link. Tick "also put it on the worklist" – or press
   **+ Add to worklist** – and it stays in the Worklist until someone marks it done.
+- **Red / Blue.** Every Fusion is checked via LLDP: e1 on the Red, e2 on the Blue network.
+- **History.** Data tab: mismatches over time, what is new / resolved since the last state,
+  every import.
 - **Open in CloudVision.** Port cards link straight to the port in CloudVision (needs the
   switch's CV serial in the Switches tab).
 - **Hand it on.** Copy a job card for a technician, copy a link, print, or download a CSV.
@@ -66,7 +70,8 @@ You need Python 3.8 or newer. Nothing else to install.
 
 ## Good to know
 
-- Your data stays local. Imports are kept in `data/`, which is never uploaded to git.
+- Your data stays local. Imports are kept in `data/`, notes / ignores / settings / history
+  in `state.db` - neither is ever uploaded to git.
 - Jira keys like `PLS-123` link to qvest-media.atlassian.net (`jira_url` in the config).
 - CloudVision is optional: put a read-only token in `cv_token.txt` and restart.
 - Details on matching rules, settings and CloudVision: [docs/TECHNICAL.md](docs/TECHNICAL.md)

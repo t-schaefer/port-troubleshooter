@@ -36,6 +36,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import model
+import state
 from cloudvision import CloudVision, CloudVisionError
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,12 +45,8 @@ DATA_DIR = BASE_DIR / "data"
 META_FILE = DATA_DIR / "meta.json"
 CONFIG_FILE = BASE_DIR / "config.json"
 CONFIG_EXAMPLE = BASE_DIR / "config.example.json"
-SWITCHES_FILE = BASE_DIR / "switches.json"
-FUTURE_FILE = BASE_DIR / "future.json"
-SERIALS_FILE = BASE_DIR / "serials.json"
 SERIALS_EXAMPLE = BASE_DIR / "serials.example.json"
-NOTES_FILE = BASE_DIR / "notes.json"
-IGNORES_FILE = BASE_DIR / "ignores.json"
+DB = state.StateDB(BASE_DIR / "state.db")     # notes, ignores, future, serials, switch names, history
 TOKEN_FILE = BASE_DIR / "cv_token.txt"
 LOG_FILE = BASE_DIR / "service.log"
 MAX_UPLOAD = 60 * 1024 * 1024
@@ -83,8 +80,8 @@ def kind_name(key):
     """'cvports:DCBESWLIVSPI001' -> 'CloudVision ports DCBESWLIVSPI001'."""
     k, _, host = key.partition(":")
     return (KIND_NAMES.get(k, k) + (" " + host if host else ""))
-MISMATCH_CACHE = {"key": None, "rows": []}
-PORTS_CACHE = {"key": None, "rows": []}
+MISMATCH_CACHE = {"key": None, "rows": None}
+PORTS_CACHE = {"key": None, "rows": None}
 
 WORKLIST_COLS = [("source", "Source"), ("switch", "Switch (Patchmanager)"), ("cv_switch", "Switch (CloudVision)"),
                  ("intf", "Interface"), ("what", "Problem"), ("destination", "Destination"), ("status", "Status"),
@@ -127,27 +124,38 @@ COMPUTE_LOCK = threading.Lock()     # the big lists: one at a time, without bloc
 STATE = {"loading": True, "lists_ready": False}
 
 
-def mismatches():
-    """Whole-site comparison - computed once per data state."""
-    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True), FUSION["at"])
-    if MISMATCH_CACHE["key"] != key:
-        with COMPUTE_LOCK:
-            if MISMATCH_CACHE["key"] != key:
-                MISMATCH_CACHE["rows"] = STORE.mismatches()
-                MISMATCH_CACHE["key"] = key
-    return MISMATCH_CACHE["rows"]
+def _cached(cache, key, build, st, stale_ok=True):
+    """The list for `key`. While it is being rebuilt, visitors of the running data state get the
+    previous list at once instead of waiting (it is replaced a moment later). stale_ok=False
+    (background builds, history) always waits for the real result."""
+    if cache.get("key") == key:
+        return cache["rows"]
+    if stale_ok and st is STORE and cache.get("rows") is not None:
+        if not COMPUTE_LOCK.acquire(blocking=False):
+            return cache["rows"]            # a rebuild / new data state is being prepared - serve what is there
+        COMPUTE_LOCK.release()
+        if cache.get("store") is not st and cache.get("store") is not None and STATE.get("swapping"):
+            return cache["rows"]
+    with COMPUTE_LOCK:
+        if cache.get("key") != key:
+            rows = build()
+            cache.update(rows=rows, key=key, store=st)
+    return cache["rows"]
 
 
-def ports_overview():
-    """All ports (a few seconds) - computed once per data state."""
-    key = (json.dumps(STORE.meta, sort_keys=True), json.dumps(STORE.overrides, sort_keys=True),
-           json.dumps(STORE.future, sort_keys=True), CV["events_at"], FUSION["at"])
-    if PORTS_CACHE["key"] != key:
-        with COMPUTE_LOCK:
-            if PORTS_CACHE["key"] != key:
-                PORTS_CACHE["rows"] = STORE.ports_overview(CV["events"])
-                PORTS_CACHE["key"] = key
-    return PORTS_CACHE["rows"]
+def mismatches(st=None, stale_ok=True):
+    """Whole-site comparison - computed once per data state (st: a store being prepared)."""
+    st = st or STORE
+    key = (id(st), json.dumps(st.meta, sort_keys=True), json.dumps(st.overrides, sort_keys=True), FUSION["at"])
+    return _cached(MISMATCH_CACHE, key, st.mismatches, st, stale_ok)
+
+
+def ports_overview(st=None, stale_ok=True):
+    """All ports - computed once per data state (st: a store being prepared)."""
+    st = st or STORE
+    key = (id(st), json.dumps(st.meta, sort_keys=True), json.dumps(st.overrides, sort_keys=True),
+           json.dumps(st.future, sort_keys=True), CV["events_at"], FUSION["at"])
+    return _cached(PORTS_CACHE, key, lambda: st.ports_overview(CV["events"]), st, stale_ok)
 
 
 # ---------------------------------------------------------------- notes, Jira links, manual worklist
@@ -159,16 +167,17 @@ JIRA_RE = re.compile(r"^[\w\s#:/.?=&%~\-,;]{0,300}$")
 
 
 def load_notes():
-    try:
-        return json.loads(NOTES_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+    return DB.notes()
 
 
 def save_notes(notes):
-    tmp = NOTES_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(notes, indent=1, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(NOTES_FILE)
+    """Write the whole (small) note list: new / changed ones saved, removed ones deleted."""
+    keep = {n["id"] for n in notes}
+    for old in DB.notes():
+        if old["id"] not in keep:
+            DB.delete_note(old["id"])
+    for n in notes:
+        DB.save_note(n)
 
 
 def note_target(t):
@@ -201,10 +210,7 @@ def same_target(a, b):
 
 def load_ignores():
     """{mismatch key: {reason, user, at, kind, switch, intf, says}} - 'not an error' marks."""
-    try:
-        return json.loads(IGNORES_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return DB.get("ignores")
 
 
 def known_users():
@@ -307,16 +313,18 @@ def md_to_html(md):
     return "\n".join(out)
 
 
-def warm_up():
+def warm_up(reason="update"):
     """Build the big lists (Ports, Mismatches) in the background after start / import / settings
     change, so a visitor never waits for them and other requests are not held up."""
     def work():
         try:
             t = time.time()
-            ports_overview()
-            mismatches()
+            ports_overview(stale_ok=False)
+            rows = mismatches(stale_ok=False)
             STATE["lists_ready"] = True
             log.info("lists ready (%.1fs)", time.time() - t)
+            if DB.log_build(rows, set(load_ignores()), reason):
+                log.info("history: new evaluation state saved")
         except Exception:
             log.exception("warm-up failed")
     threading.Thread(target=work, daemon=True).start()
@@ -353,11 +361,11 @@ def load_serials():
     from serials.example.json, edits from the Switches tab in serials.json; inventory from the
     CloudVision API (when configured) fills the rest."""
     out = {}
-    for f in (SERIALS_EXAMPLE, SERIALS_FILE):
-        try:
-            out.update({k.upper(): v for k, v in json.loads(f.read_text(encoding="utf-8")).items() if v})
-        except (OSError, ValueError):
-            pass
+    try:
+        out.update({k.upper(): v for k, v in json.loads(SERIALS_EXAMPLE.read_text(encoding="utf-8")).items() if v})
+    except (OSError, ValueError):
+        pass
+    out.update({k.upper(): v for k, v in DB.get("serials").items() if v})
     for d in CV.get("devices") or []:
         if d.get("hostname") and d.get("id"):
             out.setdefault(d["hostname"].upper(), d["id"])
@@ -371,29 +379,56 @@ def cv_token():
     return t
 
 
-def load_saved():
-    """Load the last import of each kind from data/."""
+REBUILD_LOCK = threading.Lock()
+
+
+def build_store():
+    """A complete, new data state from data/ + the settings in state.db + the last LLDP read.
+    Built next to the running one - requests keep using the old state meanwhile."""
     DATA_DIR.mkdir(exist_ok=True)
     try:
         meta = json.loads(META_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         meta = {}
+    st = model.Store()
     for key, m in meta.items():
         f = DATA_DIR / m.get("stored", "")
         if f.is_file():
             try:
-                STORE.load(key.split(":")[0], m["file"], f.read_bytes(), when=m.get("loaded"))
-                log.info("loaded %s: %s (%s)", kind_name(key), m["file"], STORE.meta[key]["count"])
+                st.load(key.split(":")[0], m["file"], f.read_bytes(), when=m.get("loaded"))
             except Exception as e:  # a broken file must not stop the service
                 log.warning("could not load %s from %s: %s", key, f, e)
+    st.set_overrides(DB.get("switches"))
+    st.set_future(DB.get("future"))
+    if FUSION["rows"]:
+        st.set_lldp([dict(r) for r in FUSION["rows"]])
+    return st
+
+
+def swap_in(st, reason):
+    """Prepare the big lists for the new state, then switch to it in one step."""
+    global STORE
+    STATE["swapping"] = True
     try:
-        STORE.set_overrides(json.loads(SWITCHES_FILE.read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
-    try:
-        STORE.set_future(json.loads(FUTURE_FILE.read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
+        ports_overview(st, stale_ok=False)
+        rows = mismatches(st, stale_ok=False)
+        with LOCK:
+            STORE = st
+    finally:
+        STATE["swapping"] = False
+    STATE["lists_ready"] = True
+    if DB.log_build(rows, set(load_ignores()), reason):
+        log.info("history: new evaluation state saved (%s)", reason)
+
+
+def load_saved():
+    """At start: build the data state from data/."""
+    global STORE
+    st = build_store()
+    for key in st.meta:
+        log.info("loaded %s: %s (%s)", kind_name(key), st.meta[key]["file"], st.meta[key]["count"])
+    with LOCK:
+        STORE = st
 
 
 # ---------------------------------------------------------------- update from latest files
@@ -478,8 +513,8 @@ def import_file(filename, data, source=None):
                          "export (CSV), IP list View (xlsx), Connectivity snagging list (xlsx), Neuron signal list "
                          "(xlsx) or a CloudVision Ethernet-interfaces export (CSV).")
     key = model.meta_key(kind, filename)          # 'cvports:<HOST>' - one per switch
-    with LOCK:
-        n = STORE.load(kind, filename, data)
+    model.Store().load(kind, filename, data)      # parses? (a broken file is refused before it is stored)
+    with REBUILD_LOCK:
         ext = filename.rsplit(".", 1)[1].lower()
         base = key.replace(":", "-")
         stored = "%s.%s" % (base, ext)
@@ -490,10 +525,15 @@ def import_file(filename, data, source=None):
             meta = json.loads(META_FILE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = {}
-        meta[key] = {"file": filename, "stored": stored, "loaded": STORE.meta[key]["loaded"]}
+        meta[key] = {"file": filename, "stored": stored, "loaded": datetime.now().isoformat(timespec="seconds")}
         if source:
             meta[key]["source"] = source
         META_FILE.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        # new data state next to the running one, then switch over (no waiting for other requests)
+        st = build_store()
+        n = st.meta.get(key, {}).get("count", 0)
+        swap_in(st, "import " + kind_name(key))
+    DB.log_import(kind_name(key), filename, n, "upload" if not source else "import folder")
     log.info("IMPORT %s: %s (%d rows)", kind_name(key), filename, n)
     return key, n
 
@@ -517,11 +557,11 @@ def fusion_loop():
                 payload = json.loads(raw.decode("utf-8"))
                 rows = model.parse_fusion_state(payload)
                 with LOCK:
-                    STORE.set_lldp(rows)
+                    STORE.set_lldp([dict(r) for r in rows])
                 FUSION.update(at=datetime.now().isoformat(timespec="seconds"), error="", rows=rows,
                               devices=len(payload.get("devices") or []), with_name=sum(1 for x in rows if x["switch_name"]))
                 log.info("Fusion LLDP: %d devices, %d neighbours (%d with switch name)", FUSION["devices"], len(rows), FUSION["with_name"])
-                warm_up()
+                warm_up("Fusion LLDP")
             except Exception as e:
                 FUSION["error"] = "%s: %s" % (type(e).__name__, str(e)[:200])
         FUSION_WAKE.wait(FUSION_EVERY_SEC)
@@ -700,6 +740,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"notes": sorted(notes, key=lambda n: n.get("created", ""), reverse=True), "users": known_users()})
             elif u.path == "/api/ignores":
                 self._json({"ignores": load_ignores()})
+            elif u.path == "/api/history":
+                self._json(DB.history())
             elif u.path == "/api/sources":
                 self._json(scan_sources())
             elif u.path == "/api/chain":
@@ -838,7 +880,7 @@ class Handler(BaseHTTPRequestHandler):
                     if v:
                         clean[k] = v
                 with LOCK:
-                    SWITCHES_FILE.write_text(json.dumps(clean, indent=2, sort_keys=True), encoding="utf-8")
+                    DB.put("switches", clean)
                     STORE.set_overrides(clean)
                 log.info("switches.json saved (%d overrides)", len(clean))
                 warm_up()
@@ -855,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
                         fut[dev] = {"note": note, "since": datetime.now().strftime("%Y-%m-%d")}
                     else:
                         fut.pop(dev, None)
-                    FUTURE_FILE.write_text(json.dumps(fut, indent=2, sort_keys=True), encoding="utf-8")
+                    DB.put("future", fut)
                     STORE.set_future(fut)
                 log.info("FUTURE %s %s %s", "set" if data.get("future") else "cleared", dev, note)
                 warm_up()
@@ -926,9 +968,7 @@ class Handler(BaseHTTPRequestHandler):
                         ign[key] = {"reason": reason, "user": user, "at": datetime.now().isoformat(timespec="seconds"),
                                     **{k: str(data.get(k, ""))[:200] for k in ("kind", "switch", "intf", "says")}}
                         log.info("IGNORE %s by %s: %s %s %s - %s", key, user, data.get("switch"), data.get("intf"), data.get("kind"), reason)
-                    tmp = IGNORES_FILE.with_suffix(".tmp")
-                    tmp.write_text(json.dumps(ign, indent=1, ensure_ascii=False), encoding="utf-8")
-                    tmp.replace(IGNORES_FILE)
+                    DB.put("ignores", ign)
                 self._json({"ok": True})
             elif u.path == "/api/serials":
                 data = json.loads(body or b"{}")
@@ -941,7 +981,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._err("bad serial for %s" % k)
                     if v:
                         clean[k] = v
-                SERIALS_FILE.write_text(json.dumps(clean, indent=2, sort_keys=True), encoding="utf-8")
+                DB.put("serials", clean)
                 log.info("serials.json saved (%d)", len(clean))
                 self._json({"ok": True})
             elif u.path == "/api/fusion/refresh":
@@ -973,6 +1013,7 @@ def main():
 
     def start():   # listen at once - the page shows "loading" until the data is in
         t = time.time()
+        DB.migrate_json(BASE_DIR, log)
         with LOCK:
             load_saved()
         STATE["loading"] = False

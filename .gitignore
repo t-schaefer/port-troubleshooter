@@ -11,3 +11,6 @@ notes.tmp
 serials.json
 ignores.json
 ignores.tmp
+state.db
+state.db-*
+*.json.migrated

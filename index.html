@@ -111,6 +111,7 @@
   .bucket.on.bad { border-color: var(--bad); background: var(--badbg); } .bucket.on.warn { border-color: var(--warn); background: var(--warnbg); } .bucket.on.naming { border-color: var(--accent); background: var(--infobg); }
   td.srcs div { font-size: .85rem; padding: 1px 0; } td.srcs div.bad { color: var(--bad); } td.srcs div.naming { color: var(--accent); }
   .act { margin-top: 4px; font-weight: 600; font-size: .88rem; }
+  ul.hist { list-style: none; padding: 0; margin: 4px 0 8px; display: grid; gap: 3px; font-size: .85rem; } ul.hist li .sev { margin-right: 6px; }
   .explain { display: grid; gap: 8px; margin: 14px 0 6px; } .ex { border-radius: 10px; padding: 10px 12px; border-left: 5px solid var(--line); background: var(--hl); }
   .ex.bad { border-color: var(--bad); background: var(--badbg); } .ex.warn { border-color: var(--warn); background: var(--warnbg); }
   .ex.naming { border-color: var(--accent); background: var(--infobg); } .ex.ok { border-color: var(--ok); background: var(--okbg); }
@@ -260,6 +261,9 @@
     </label>
     <div id="importlog" class="muted" style="margin-top:8px"></div>
 
+    <h2>History</h2>
+    <div class="ds" id="histbox"><span class="muted">loading…</span></div>
+
     <h2>Speed check</h2>
     <div class="ds"><div class="muted">Measures where time goes: on the server, on the network (transfer) or in this browser (drawing).
       <button class="btn sm primary" id="speedbtn">Run speed check</button> <span id="speedver" class="muted"></span></div><div id="speedres"></div></div>
@@ -339,6 +343,7 @@ function showTab(t) {
   if (t === "port") $("#drawer").classList.remove("open");
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "tab-" + t));
+  if (t === "data") renderHistory();
   if (t === "work") loadWork(); if (t === "mis") loadMis(); if (t === "shut") loadShut(); if (t === "ports") loadPorts(); if (t === "devs") loadDevs(); if (t === "switches") loadSwitches(); if (t === "data") renderData();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
@@ -680,6 +685,46 @@ async function openHelp() {
 }
 $("#helpbtn").onclick = openHelp;
 
+// ------------------------------------------------------------- history
+let HIST = null;
+async function loadHistory() { try { HIST = await api("/api/history"); } catch { HIST = null; } return HIST; }
+function histChart(builds) {
+  if (builds.length < 2) return '<p class="muted">The chart starts with the second evaluation state (after the next import or data change).</p>';
+  const W = 640, H = 160, P = 28, max = Math.max(1, ...builds.map(b => Math.max(b.real, b.incomplete, b.naming)));
+  const x = i => P + i * (W - 2 * P) / (builds.length - 1), y = v => H - P - v * (H - 2 * P) / max;
+  const line = (k, c) => `<polyline fill="none" stroke="${c}" stroke-width="2" points="${builds.map((b, i) => x(i) + "," + y(b[k])).join(" ")}"/>` +
+    builds.map((b, i) => `<circle cx="${x(i)}" cy="${y(b[k])}" r="3" fill="${c}"><title>${esc(b.at.replace("T", " "))} · ${esc(b.reason)}: ${b[k]}</title></circle>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" role="img" aria-label="Mismatches over time">
+    <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" stroke="var(--line)"/>
+    <text x="${P}" y="${H - 8}" font-size="10" fill="var(--muted)">${esc(builds[0].at.slice(0, 10))}</text>
+    <text x="${W - P}" y="${H - 8}" font-size="10" fill="var(--muted)" text-anchor="end">${esc(builds[builds.length - 1].at.slice(0, 10))}</text>
+    <text x="4" y="${y(max) + 4}" font-size="10" fill="var(--muted)">${max}</text>
+    ${line("naming", "var(--accent)")}${line("incomplete", "var(--warn)")}${line("real", "var(--bad)")}</svg>
+    <div class="muted" style="font-size:.8rem"><span style="color:var(--bad)">■</span> real mismatch · <span style="color:var(--warn)">■</span> incomplete · <span style="color:var(--accent)">■</span> naming only</div>`;
+}
+function diffList(items, label) {
+  if (!items.length) return "";
+  const li = items.slice(0, 40).map(d => `<li><span class="sev ${d.bucket === "real" ? "error" : d.bucket === "incomplete" ? "warning" : "naming"}">${esc(d.kind)}</span>
+    ${esc(d.switch)} <span class="mono">${esc(d.intf)}</span> <span class="muted">${esc(d.says)}</span></li>`).join("");
+  return `<details><summary><b>${items.length} ${label}</b></summary><ul class="hist">${li}${items.length > 40 ? `<li class="muted">… and ${items.length - 40} more</li>` : ""}</ul></details>`;
+}
+async function renderHistory() {
+  const h = await loadHistory(); if (!h) return;
+  const b = h.builds, last = b[b.length - 1];
+  $("#histbox").innerHTML = `${last ? `<div>Now: <b style="color:var(--bad)">${last.real}</b> real · <b style="color:var(--warn)">${last.incomplete}</b> incomplete · <b style="color:var(--accent)">${last.naming}</b> naming only
+      <span class="muted">(state of ${esc(last.at.replace("T", " "))}, after ${esc(last.reason)})</span></div>` : '<p class="muted">No evaluation saved yet.</p>'}
+    ${histChart(b)}
+    ${h.diff.since ? `<h4 style="margin:10px 0 4px">Since the previous state (${esc(h.diff.since.replace("T", " "))})</h4>${diffList(h.diff.resolved, "resolved") || ""}${diffList(h.diff.new, "new") || ""}${!h.diff.new.length && !h.diff.resolved.length ? '<p class="muted">no change in the mismatches</p>' : ""}` : ""}
+    <h4 style="margin:12px 0 4px">Imports</h4>
+    ${h.imports.length ? `<table><thead><tr><th>When</th><th>Input</th><th>File</th><th>Rows</th><th>How</th></tr></thead><tbody>${h.imports.slice(0, 15).map(i =>
+      `<tr><td class="muted">${esc(i.at.replace("T", " "))}</td><td>${esc(i.kind)}</td><td>${esc(i.file)}</td><td>${i.rows}</td><td class="muted">${esc(i.how)}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">none recorded yet</p>'}`;
+}
+function misSince() {
+  if (!HIST || !HIST.diff || !HIST.diff.since) return "";
+  const n = HIST.diff.new.filter(d => d.bucket === "real").length, r = HIST.diff.resolved.filter(d => d.bucket === "real").length;
+  return n || r ? ` · real mismatches since ${esc(HIST.diff.since.slice(0, 16).replace("T", " "))}: <b style="color:var(--bad)">+${n} new</b> / <b style="color:var(--ok)">−${r} resolved</b> <a class="lnk" href="#data">history</a>` : "";
+}
+
 // ------------------------------------------------------------- speed check
 async function timed(path) {
   const t = performance.now(), r = await fetch(path), txt = await r.text(), total = performance.now() - t;
@@ -965,7 +1010,7 @@ async function loadMis() {
   if (!MIS) { $("#mfoot").textContent = "comparing all ports…"; }
   else { renderMis(); }
   try { MIS = (await api("/api/mismatches")).items; } catch (e) { $("#mfoot").textContent = e.message; return; }
-  await loadIgnores();
+  await loadIgnores(); await loadHistory();
   $("#miscount").textContent = MIS.filter(m => bucketOf(m) === "real").length; renderMis();
 }
 const BUCKET = {
@@ -998,6 +1043,7 @@ let mbucket = store.get("mbucket", "real"), mkind = "";
 function renderMis() {
   const q = $("#mq").value.trim().toLowerCase(), byB = {}, byK = {};
   MIS.forEach(m => { const b = bucketOf(m); byB[b] = (byB[b] || 0) + 1; });
+  if (mbucket === "ignored" && !byB.ignored) mbucket = "real";     // nothing ignored (any more) - back to the real ones
   $("#mbuckets").innerHTML = Object.entries(BUCKET).map(([k, [t, d, c]]) => `<button class="bucket ${c} ${k === mbucket ? "on" : ""}" data-b="${k}">
       <b>${byB[k] || 0}</b><span>${t}</span><small>${d}</small></button>`).join("");
   $("#mbuckets").querySelectorAll(".bucket").forEach(b => b.onclick = () => { mbucket = b.dataset.b; mkind = ""; store.set("mbucket", mbucket); mLimit = PAGE; renderMis(); });
@@ -1022,7 +1068,7 @@ function renderMis() {
   if (rows.length > mLimit) $("#mtable tbody").insertAdjacentHTML("beforeend", `<tr><td colspan="4" style="text-align:center;padding:12px"><button class="btn" id="mmore">Show more</button> <span class="muted">${mLimit} of ${rows.length} shown</span></td></tr>`);
   const mm = $("#mmore"); if (mm) mm.onclick = () => { mLimit += PAGE * 2; renderMis(); };
   const act = [mkind && "<b>" + esc(mkind) + "</b>", q && "text <b>“" + esc(q) + "”</b>"].filter(Boolean);
-  $("#msum").innerHTML = `<b>${BUCKET[mbucket][0]}</b>: showing <b>${rows.length}</b> of ${inB.length}${act.length ? " · filtered by " + act.join(", ") : ""}
+  $("#msum").innerHTML = `<b>${BUCKET[mbucket][0]}</b>: showing <b>${rows.length}</b> of ${inB.length}${act.length ? " · filtered by " + act.join(", ") : ""}${misSince()}
     ${act.length ? '<button class="btn" id="mclear">Clear filters</button>' : ""}`;
   const mc = $("#mclear"); if (mc) mc.onclick = () => { mkind = ""; $("#mq").value = ""; renderMis(); };
   $("#mfoot").textContent = "Reference is the Patchmanager cabling (or the IP list when there is no cable). Red source line = disagrees, blue = naming only. Click a row for the full port card.";
