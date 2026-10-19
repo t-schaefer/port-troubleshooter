@@ -814,6 +814,7 @@ class Store:
         self.neuron = []        # Neuron signal list rows (one per BNC)
         self.cvports = {}       # CloudVision hostname (upper) -> {nums: interface row}
         self.lldp = []          # Fusion LLDP rows (parse_fusion_state), see set_lldp
+        self.lldp_learnt = {}   # chassis MAC -> {switch, votes, of} learnt from the documentation
         self.lldp_by_port, self.lldp_by_dev, self.lldp_macs = {}, {}, {}
         self.meta = {}          # kind -> {"file", "loaded", "count"}
         self._rebuild_names()
@@ -1161,19 +1162,69 @@ class Store:
                 "ports": [intf_name(p) for p in ports]}
 
     # -- Fusion LLDP ---------------------------------------------------------------------------
-    def set_lldp(self, rows):
-        """Take the Fusion LLDP rows. The switch is found by its LLDP name (CloudVision hostname
-        or Patchmanager name); rows with only a chassis MAC use the MAC -> switch pairs learnt
-        from rows that carry both."""
+    def documented_ports(self):
+        """device -> {(switch, nums)} from the documentation: CloudVision port descriptions, the
+        IP list and Patchmanager cabling (paths that reach a switch). Used to learn which switch
+        an LLDP chassis MAC belongs to."""
+        doc = defaultdict(set)
+        for host, ports in self.cvports.items():
+            pm = self.pm_name(host) or host
+            for nums, l in ports.items():
+                d = l["description"].strip(" *")
+                if d:
+                    dev, dport = self.device_split(d)
+                    doc[norm_digits(dev)].add((pm, tuple(nums), dport))
+        for p in self.plan:
+            if not p["free"] and p.get("_dev"):
+                doc[norm_digits(p["_dev"])].add((p["switch"], tuple(p["nums"]), p.get("_devport") or p["eqport"]))
+        return doc
+
+    def learn_macs(self, rows, manual=None):
+        """Chassis MAC -> switch: manual entries win; else a vote - every LLDP row whose device
+        is documented on <switch> <port> with the same port as LLDP reports votes for that
+        switch. A MAC gets the switch with at least 2 votes and 60 % of them."""
+        manual = {k.lower(): v for k, v in (manual or {}).items() if k and v}
+        doc = self.documented_ports()
+        votes = defaultdict(Counter)
+        for r in rows:
+            nums = parse_intf(r["port"])
+            if not r["chassis"] or not nums:
+                continue
+            ifnum = {"e1": 1, "e2": 2}.get(r["iface"])
+            for sw, dn, dport in doc.get(norm_digits(r["device"]), ()):
+                # the device port tells e1 from e2 (25G.1 / 25G.2) - both often use the same switch port number
+                m = re.search(r"(\d+)\s*$", str(dport or ""))
+                if ifnum and m and int(m.group(1)) in (1, 2) and int(m.group(1)) != ifnum:
+                    continue
+                if dn == nums or dn[:len(nums)] == nums or nums[:len(dn)] == dn:
+                    votes[r["chassis"]][self.pm_name(sw) or sw] += 1
+        learnt = {}
+        for mac, c in votes.items():
+            (sw, n), total = c.most_common(1)[0], sum(c.values())
+            if n >= 2 and n >= 0.6 * total:
+                learnt[mac] = {"switch": sw, "votes": n, "of": total}
+        return manual, learnt
+
+    def set_lldp(self, rows, manual_macs=None):
+        """Take the Fusion LLDP rows. Switch by LLDP name when the device sends one (the Fusion
+        API does not), else by chassis MAC: manual entry (Switches tab) or learnt from the
+        documentation (learn_macs)."""
         macs = {}
         for r in rows:
             sw = self.pm_name(r["switch_name"]) if r["switch_name"] else None
             r["switch"] = sw or ""
             if sw and r["chassis"]:
                 macs.setdefault(r["chassis"], sw)
+        manual, learnt = self.learn_macs(rows, manual_macs)
+        self.lldp_learnt = learnt
         for r in rows:
-            if not r["switch"] and r["chassis"] in macs:
-                r["switch"], r["via_mac"] = macs[r["chassis"]], True
+            if not r["switch"]:
+                if r["chassis"] in manual:
+                    r["switch"], r["via_mac"] = self.pm_name(manual[r["chassis"]]) or manual[r["chassis"]], "manual"
+                elif r["chassis"] in macs:
+                    r["switch"], r["via_mac"] = macs[r["chassis"]], "name"
+                elif r["chassis"] in learnt:
+                    r["switch"], r["via_mac"] = learnt[r["chassis"]]["switch"], "learnt"
             r["nums"] = list(parse_intf(r["port"]) or [])
             r["color"] = switch_color(r["switch"] or r["switch_name"])
             r["expected"] = {"e1": "red", "e2": "blue"}.get(r["iface"], "")

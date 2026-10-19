@@ -61,9 +61,13 @@ everything that is still open.
 
   Fusion LLDP:      every 5 min the service reads the Fusion Dashboard's /api/state
                     (config fusion_url, default http://localhost:8090; read-only, from the
-                    dashboard's cache - the Fusions are not asked again). Switch = LLDP system
-                    name (any of LLDP_NAME_KEYS) or, without a name, the chassis MAC learnt from
-                    rows that have both. LLDP is a source on the port card (compared by device
+                    dashboard's cache - the Fusions are not asked again). The Fusion API sends
+                    no switch name, only chassis MAC + port ({"interface":1,"chassis":
+                    "c4:ca:2b:..","port":"Ethernet4/22/4"}). MAC -> switch: typed in under
+                    Switches (wins), else learnt by vote from the documentation (CloudVision
+                    descriptions, IP list): a device documented on <switch> <port> with the
+                    matching e1/e2 (device port ...1 / ...2) votes for <switch>; >= 2 votes
+                    and 60 %. LLDP is a source on the port card (compared by device
                     only), "LLDP sees another device" is a real mismatch, "LLDP shows the far
                     end, cabling incomplete" where the Patchmanager path stops at a panel.
   Red / Blue:       e1 must be on a Red, e2 on a Blue 2110 switch: ...SWR / ...SWB by type,

@@ -401,7 +401,7 @@ def build_store():
     st.set_overrides(DB.get("switches"))
     st.set_future(DB.get("future"))
     if FUSION["rows"]:
-        st.set_lldp([dict(r) for r in FUSION["rows"]])
+        st.set_lldp([dict(r) for r in FUSION["rows"]], DB.get("lldp_macs"))
     return st
 
 
@@ -557,7 +557,7 @@ def fusion_loop():
                 payload = json.loads(raw.decode("utf-8"))
                 rows = model.parse_fusion_state(payload)
                 with LOCK:
-                    STORE.set_lldp([dict(r) for r in rows])
+                    STORE.set_lldp([dict(r) for r in rows], DB.get("lldp_macs"))
                 FUSION.update(at=datetime.now().isoformat(timespec="seconds"), error="", rows=rows,
                               devices=len(payload.get("devices") or []), with_name=sum(1 for x in rows if x["switch_name"]))
                 log.info("Fusion LLDP: %d devices, %d neighbours (%d with switch name)", FUSION["devices"], len(rows), FUSION["with_name"])
@@ -794,8 +794,14 @@ class Handler(BaseHTTPRequestHandler):
                     cvhosts = {d["hostname"].upper() for d in CV["devices"]}
                     sw = STORE.switches()
                     serials = load_serials()
+                    manual = {v: k for k, v in DB.get("lldp_macs").items()}
+                    learnt = {}
+                    for mac, info in (STORE.lldp_learnt or {}).items():
+                        learnt.setdefault(info["switch"], []).append("%s (%d of %d)" % (mac, info["votes"], info["of"]))
                     for s in sw:
                         s["serial"] = serials.get((s["cv"] or "").upper(), "")
+                        s["lldp_mac"] = manual.get(s["pm"], "")
+                        s["lldp_learnt"] = ", ".join(learnt.get(s["pm"], []))
                         s["override"] = s["pm"] in STORE.overrides
                         s["in_cv"] = (s["cv"].upper() in cvhosts) if CV["devices"] and s["cv"] else None
                         s["dup"] = s["cv"].upper() in STORE.mapping_dups if s["cv"] else False
@@ -969,6 +975,27 @@ class Handler(BaseHTTPRequestHandler):
                                     **{k: str(data.get(k, ""))[:200] for k in ("kind", "switch", "intf", "says")}}
                         log.info("IGNORE %s by %s: %s %s %s - %s", key, user, data.get("switch"), data.get("intf"), data.get("kind"), reason)
                     DB.put("ignores", ign)
+                self._json({"ok": True})
+            elif u.path == "/api/lldpmacs":
+                data = json.loads(body or b"{}")
+                if not isinstance(data, dict) or len(data) > 500:
+                    return self._err("expected {chassis MAC: switch}")
+                clean = {}
+                for mac, sw in data.items():
+                    mac, sw = str(mac).strip().lower(), str(sw).strip()
+                    if not mac:
+                        continue
+                    if not re.fullmatch(r"[0-9a-f]{2}([:\-.]?[0-9a-f]{2}){5}", mac) or not SWITCH_RE.match(sw):
+                        return self._err("bad MAC %s" % mac)
+                    mac = re.sub(r"[^0-9a-f]", "", mac)
+                    clean[":".join(mac[i:i + 2] for i in range(0, 12, 2))] = sw
+                DB.put("lldp_macs", clean)
+                with LOCK:
+                    if FUSION["rows"]:
+                        STORE.set_lldp([dict(r) for r in FUSION["rows"]], clean)
+                FUSION["at"] = datetime.now().isoformat(timespec="seconds")     # lists depend on it
+                warm_up("LLDP MAC entries")
+                log.info("LLDP MACs saved (%d)", len(clean))
                 self._json({"ok": True})
             elif u.path == "/api/serials":
                 data = json.loads(body or b"{}")

@@ -246,9 +246,9 @@
   </section>
 
   <section id="tab-switches" class="hidden">
-    <p class="muted">Patchmanager name ↔ CloudVision hostname, and the CloudVision serial (device ID) used for the "open in CloudVision" links – it is in the CloudVision URL: …/cv/interface/overview/<b>HNN22357273</b>/Ethernet3%2F1%2F1. Hostnames are taken from the snagging list's name sheet; a value typed here overrides it (saved in switches.json on the server).</p>
+    <p class="muted">Patchmanager name ↔ CloudVision hostname, and the CloudVision serial (device ID) used for the "open in CloudVision" links – it is in the CloudVision URL: …/cv/interface/overview/<b>HNN22357273</b>/Ethernet3%2F1%2F1. The LLDP chassis MAC (what a Fusion reports as its switch) is learnt from the documentation – type it in only if it is learnt wrong or not at all. Hostnames are taken from the snagging list's name sheet; a value typed here overrides it (saved in switches.json on the server).</p>
     <div class="filters"><input type="search" id="sq" placeholder="Filter" style="flex:1"><button class="btn primary" id="ssave">Save overrides</button><span id="smsg" class="muted"></span></div>
-    <div class="tablewrap"><table id="stable"><thead><tr><th>Patchmanager</th><th>CloudVision hostname</th><th>Override</th><th>CV serial (for links)</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table id="stable"><thead><tr><th>Patchmanager</th><th>CloudVision hostname</th><th>Override</th><th>CV serial (for links)</th><th>LLDP chassis MAC</th><th>Check</th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section id="tab-data" class="hidden">
@@ -607,8 +607,9 @@ function lldpTable(d) {
   const col = r => !r.color || !r.expected ? '<span class="muted">–</span>' : r.color === r.expected ? `<span class="tag ok">${esc(r.color)} ✓</span>` : `<span class="tag bad">${esc(r.color)} – should be ${esc(r.expected)}</span>`;
   return `<h2>LLDP <span class="muted">(Fusion Dashboard – where it is really plugged in)</span></h2>
     ${(d.lldp_problems || []).map(p => `<ul class="checks"><li class="bad">${esc(p.kind)}: ${esc(p.text)}</li></ul>`).join("")}
+    <p class="muted" style="font-size:.8rem">The Fusion reports its switch only as chassis MAC; the switch name comes from the MAC (learnt from the documentation, or typed in under Switches).</p>
     <div class="tablewrap"><table><thead><tr><th>Port</th><th>Switch port (LLDP)</th><th>Red / Blue</th><th>Seen</th></tr></thead><tbody>${
-    d.lldp.map(r => `<tr><td><b>${esc(r.iface)}</b>${r.expected ? ' <span class="muted">(' + esc(r.expected) + ")</span>" : ""}</td><td>${pl(r)}${r.via_mac ? ' <span class="muted">(switch from MAC ' + esc(r.chassis) + ")</span>" : ""}</td>
+    d.lldp.map(r => `<tr><td><b>${esc(r.iface)}</b>${r.expected ? ' <span class="muted">(' + esc(r.expected) + ")</span>" : ""}</td><td>${pl(r)}${r.via_mac ? ' <span class="muted">(MAC ' + esc(r.chassis) + ", " + esc(r.via_mac === "manual" ? "typed in" : r.via_mac === "learnt" ? "learnt" : "from name") + ")</span>" : (r.chassis && !r.switch ? ' <span class="tag warn">MAC ' + esc(r.chassis) + " unknown – enter it under Switches</span>" : "")}</td>
       <td>${col(r)}</td><td class="muted">${esc((r.fetched || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function neuronTable(d) {
@@ -1090,6 +1091,7 @@ function renderSwitches() {
     <td>${devA(s.pm)}</td><td class="mono">${esc(s.cv) || '<span class="muted">–</span>'}</td>
     <td><input type="text" data-i="${i}" value="${s.override ? esc(s.cv) : ""}" placeholder="hostname"></td>
     <td><input type="text" data-serial="${i}" value="${esc(s.serial || "")}" placeholder="${s.cv ? "e.g. HNN22357273" : ""}" ${s.cv ? "" : "disabled"}></td>
+    <td><input type="text" data-mac="${i}" value="${esc(s.lldp_mac || "")}" placeholder="${s.lldp_learnt ? "learnt" : "c4:ca:2b:…"}">${s.lldp_learnt ? `<div class="muted" style="font-size:.75rem">learnt: ${esc(s.lldp_learnt)}</div>` : ""}</td>
     <td>${s.dup ? '<span class="tag bad">same hostname as another switch</span>' : ""}${s.in_cv === false ? '<span class="tag warn">not in CloudVision inventory</span>' : s.in_cv ? '<span class="tag ok">in CloudVision</span>' : ""}</td></tr>`).join("");
 }
 $("#sq").oninput = renderSwitches;
@@ -1097,8 +1099,10 @@ $("#ssave").onclick = async () => {
   const ov = {}; SW.forEach(s => { if (s.override) ov[s.pm] = s.cv; });
   document.querySelectorAll("#stable input[data-i]").forEach(inp => { const s = SW[+inp.dataset.i]; if (inp.value.trim()) ov[s.pm] = inp.value.trim(); else delete ov[s.pm]; });
   const ser = {}; document.querySelectorAll("#stable input[data-serial]").forEach(inp => { const s = SW[+inp.dataset.serial]; if (s.cv && inp.value.trim()) ser[s.cv] = inp.value.trim(); });
-  if (!confirm(`Save ${Object.keys(ov).length} hostname override(s) and ${Object.keys(ser).length} CloudVision serial(s) on the server?`)) return;
+  const macs = {}; document.querySelectorAll("#stable input[data-mac]").forEach(inp => { const s = SW[+inp.dataset.mac]; if (inp.value.trim()) macs[inp.value.trim()] = s.pm; });
+  if (!confirm(`Save ${Object.keys(ov).length} hostname override(s), ${Object.keys(ser).length} CloudVision serial(s) and ${Object.keys(macs).length} LLDP MAC(s) on the server?`)) return;
   try { await api("/api/switches", { method: "POST", body: JSON.stringify(ov) }); await api("/api/serials", { method: "POST", body: JSON.stringify(ser) });
+    await api("/api/lldpmacs", { method: "POST", body: JSON.stringify(macs) });
     $("#smsg").textContent = "saved"; await loadStatus(); loadSwitches(); } catch (e) { $("#smsg").textContent = e.message; }
 };
 
@@ -1115,7 +1119,7 @@ async function renderData() {
     ${m[k] ? `<div class="muted">${esc(m[k].file)}<br>${m[k].count} rows · imported ${esc(m[k].loaded.replace("T", " "))}</div>` : '<div class="muted">not imported</div>'}</div>`).join("");
   const f = STATUS.fusion || {};
   $("#fusbox").innerHTML = `<h4><span class="dot ${f.at && !f.error ? "ok" : f.error ? "bad" : ""}"></span>${esc(f.url || "no fusion_url in config.json")}</h4>
-    <div class="muted">${f.at ? `${f.devices} Fusions · ${f.neighbours} LLDP neighbours (${f.with_name} with switch name, the rest via MAC) · read ${esc(f.at.replace("T", " "))} · every 5 min, read-only` : "not read yet"}</div>
+    <div class="muted">${f.at ? `${f.devices} Fusions · ${f.neighbours} LLDP neighbours (switch via the chassis MAC – see Switches) · read ${esc(f.at.replace("T", " "))} · every 5 min, read-only` : "not read yet"}</div>
     ${f.error ? `<div class="err">${esc(f.error)}</div>` : ""}<button class="btn sm" id="fusref" style="margin-top:6px">Read now</button>`;
   $("#fusref").onclick = async () => { await api("/api/fusion/refresh", { method: "POST" }); toast("Reading the Fusion Dashboard…"); setTimeout(loadStatus, 3000); };
   const cv = STATUS.cv; let raw = "";

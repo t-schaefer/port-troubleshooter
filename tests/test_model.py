@@ -166,6 +166,25 @@ class ModelTest(unittest.TestCase):
         # ... and sees CAM 02 on port 13, where nothing is documented -> listed
         self.assertEqual(self.s.port_card("SW 01", (13,))["lldp"][0]["device"], "CAM 02")
 
+    def test_lldp_mac_learnt_from_documentation(self):
+        # the real Fusion API: no switch name, only chassis MAC + port
+        self.s.plan += [{"switch": "SW 01", "nums": [n], "device": "FUS %02d.25G.1 -- R" % n, "equipment": "FUS %02d" % n,
+                         "eqport": "25G.1", "where": "R", "vlan": "", "cable": "", "sheet": "t", "row": n, "free": False}
+                        for n in (20, 21, 22)]
+        self.s._rebuild_names()
+        rows = model.parse_fusion_state({"devices": [
+            {"name": "FUS %02d" % n, "config": {"lldp": {"neighbor": [{"interface": 1, "chassis": "c4:ca:2b:ff:eb:7a", "port": "Ethernet%d" % p}]}}}
+            for n, p in ((20, 20), (21, 21), (22, 30))]})          # FUS 22 is on another port than documented
+        self.s.set_lldp(rows)
+        self.assertEqual(self.s.lldp_learnt["c4:ca:2b:ff:eb:7a"]["switch"], "SW 01")
+        self.assertEqual(self.s.lldp_learnt["c4:ca:2b:ff:eb:7a"]["votes"], 2)
+        self.assertTrue(all(r["switch"] == "SW 01" and r["via_mac"] == "learnt" for r in self.s.lldp))
+        # the deviating one shows up where LLDP really sees it
+        self.assertEqual(self.s.port_card("SW 01", (30,))["lldp"][0]["device"], "FUS 22")
+        # a manual entry wins over the learnt one
+        self.s.set_lldp(rows, {"C4:CA:2B:FF:EB:7A": "VR 01"})
+        self.assertEqual({r["switch"] for r in self.s.lldp}, {"VR 01"})
+
     def test_red_blue(self):
         self.assertEqual(model.switch_color("DCB.VR 01"), "blue")
         self.assertEqual(model.switch_color("IDF1.VSWR 01"), "red")
